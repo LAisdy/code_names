@@ -1,21 +1,41 @@
 # How to build
 
 Clone the repo, then open terminal and make a build folder:  
-`mkdir build`  
-Move to it:  
-`cd build`  
-Run cmake:  
-`cmake ..`  
-Run cmake build:  
-`cmake --build . --config Release`   
+```sh
+mkdir build
+cd build 
+```
+Configure cmake and run build:
 
+```sh
+cmake .. 
+cmake --build . --config Release   
+```
 # The idea behind the project
 
-This is a classic boardgame - codenames - implementation in c++. I was going to learn some network programing and I have come to conclusion that making some multiplayer game is a perfect way to start. Since I knew nothing on networking, I decided to use a famillar graphic library sfml which fortunatly has a networking modules too.  
+This is an implementation of the classic board game Codenames in C++.
+I wanted to learn network programming, and I realized that developing a multiplayer game would be a great way to start.
+Since I had no prior experience with networking, I decided to use SFML, a familiar graphics library that conveniently includes networking modules.  The server uses `sf::SocketSelector` to manage clients and sf::Packets to handle messages from clients and sending game state updates to them. There is a words collection , and 24 words are chosen randomly and get sent to each client. 
 
-### A minimal gameplay shown here:
+## A gameplay demo:
 <img src="demo/coolgp.gif" alt="The minimal gameplay" width="50%">
 
-# Future
+# Future Plans
 
-Well it's already kinda playable, but there are some features I'd like to add in the future. The first thing is to show players nickname in the panels of teams , also I have made a timer on the server side, but still did not use it.
+The game is already playable, but there are several features I'd like to add:  
+
+- **UI Improvements**:
+  - Player nickname display in team panels
+  - Word flagging system for team collaboration
+  - Turn timer visualization
+
+- **Networking**:
+  - Connection recovery
+  - Server-side turn timer sync
+
+- **Gameplay**:
+  - Custom word packs support
+  - Games history with some statistics
+  - Some music to the background
+
+P.S. at this moment there's no settings available exept the nickname, I'll add some later
