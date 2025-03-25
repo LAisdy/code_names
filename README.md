@@ -15,10 +15,10 @@ cmake --build . --config Release
 
 This is an implementation of the classic board game Codenames in C++.
 I wanted to learn network programming, and I realized that developing a multiplayer game would be a great way to start.
-Since I had no prior experience with networking, I decided to use SFML, a familiar graphics library that conveniently includes networking modules.  The server uses `sf::SocketSelector` to manage clients and sf::Packets to handle messages from clients and sending game state updates to them. There is a words collection , and 24 words are chosen randomly and get sent to each client. 
+Since I had no prior experience with networking, I decided to use SFML, a familiar graphics library that conveniently includes networking modules.  The server uses `sf::SocketSelector` to manage multiple clients  at the same time, and sf::Packets to handle messages from clients and to send game state updates to them. There is a words collection, and 24 words are chosen randomly and get sent to each client. 
 
 ## A gameplay demo:
-<img src="demo/coolgp.gif" alt="The minimal gameplay" width="50%">
+<img src="demo/coolgp.gif" alt="The minimal gameplay" width="75%">
 
 # Future Plans
 
