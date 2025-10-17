@@ -1,0 +1,9 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/code/tests/code_names/build/cmake_install.cmake",
+		"D:/code/tests/code_names/build/server/cmake_install.cmake",
+		"D:/code/tests/code_names/build/client/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -2,6 +2,11 @@
 add_executable(CodeNamesClient CodeNamesCli.cpp)
 
 # Линковка с SFML (требуется Graphics, Window, System)
+
+target_include_directories(CodeNamesClient PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/SFML/include"
+)
+
 target_link_libraries(CodeNamesClient PRIVATE 
     sfml-graphics-s 
     sfml-window-s 

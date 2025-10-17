@@ -2,6 +2,11 @@
 add_executable(CodeNamesServer CodeNamesServ.cpp)
 
 # Линковка с SFML (требуется Network и System)
+
+target_include_directories(CodeNamesServer PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/SFML/include"
+)
+
 target_link_libraries(CodeNamesServer PRIVATE 
     sfml-network-s 
     sfml-system-s
