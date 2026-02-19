@@ -9,851 +9,612 @@
 #include <filesystem>
 #include <exception>
 #include <windows.h>
-#include "SFML/Network.hpp"
+#include <SFML/Network.hpp>
+#include <deque>
 
-
-//const params:
-const int MAX_WORDS = 7088;
-const std::filesystem::path WORDS_PATH = "E:/Repos/test/pyt/codeNamesServ/word_col/words.txt";
+// Constants
+const int FIRST_TURN_TIME = 180;
+const int REGULAR_TURN_TIME = 90;
+const int MAX_WORDS = 399;
+const std::filesystem::path WORDS_PATH = "./words.txt";
 const sf::Time TIMEOUT = sf::seconds(300);
+const sf::Time BROADCAST_INTERVAL = sf::seconds(1.0f);
+const int CORRECT_GUESS_TIME_BONUS = 10;
 
-//game vars:
+// Command strings
+const std::string CMD_PARAMS = "params";
+const std::string CMD_BOARD = "board";
+const std::string CMD_START = "start";
+const std::string CMD_PREP = "prep";
+const std::string CMD_SLOT = "slot";
+const std::string CMD_FREE = "free";
+const std::string CMD_CARD = "card";
+const std::string CMD_FLAG = "flag";
+const std::string CMD_CHAT = "chat";
+const std::string CMD_NAME = "name";
+const std::string CMD_END = "end";
 
-std::vector<std::vector<std::string>> slots
-{
-	{},
-	{}
+// Enums
+enum Color {
+    NEUTRAL = 0,
+    BLUE = 1,
+    RED = 2,
+    ASSASSIN = 3
 };
 
-//enums:
-enum Color
-{
-	WHITE = 0,
-	ORANGE = 1,
-	BROWN = 2,
-	BLACK = 3
+enum Role {
+    SPECTATOR,
+    PLAYER,
+    MASTER
 };
 
-//structs:
-struct Player
-{
-	std::unique_ptr<sf::TcpSocket> socket;
-	int clientId;
-	int team;
-	int slot;
-	std::string role;  //"spec", "player", "master"
-	std::string name;
-	bool isHost = false;
-	sf::Clock lastActivityClock;
+// Structs
+struct Player {
+    std::unique_ptr<sf::TcpSocket> socket;
+    int clientId;
+    int team = -1;
+    int slot = -1;
+    Role role = SPECTATOR;
+    std::string name;
+    bool isHost = false;
+    sf::Clock lastActivityClock;
 
-	void setRole(const std::string& newRole)
-	{
-		role = newRole;
-	}
-
-	void setTeam(int newTeam)
-	{
-		team = newTeam;
-	}
+    void setRole(Role newRole) { role = newRole; }
+    void setTeam(int newTeam) { team = newTeam; }
 };
 
-struct WordCard
-{
-	WordCard(int num, std::string word, Color col)
-		:order(num), gameWord(word), color(col)
-	{
-		isRevealed = false;
-	};
-	int order;
-	std::string gameWord;
-	Color color;
-	bool isRevealed;
-	std::vector<std::string> redFlaggers;
-	std::vector<std::string> greenFlaggers;
+struct WordCard {
+    int order;
+    std::string gameWord;
+    Color color;
+    bool isRevealed = false;
+    std::vector<std::string> blueFlaggers; // Renamed for clarity, assuming teams
+    std::vector<std::string> redFlaggers;
+
+    WordCard(int num, std::string word, Color col) : order(num), gameWord(word), color(col) {}
 };
 
-struct GameStats
-{
-	std::vector<WordCard> gameBoard;
+struct Lobby {
+    std::vector<std::vector<std::string>> slots{ 2 };
 
-	sf::Clock timer;
-	float timerVal = 100;
-	float timeLeft = 0;
+    void resizeTeams(int size) {
+        slots[0].assign(size, "free");
+        slots[1].assign(size, "free");
+    }
 
-	int curTurn = 0b00;
-	bool existsWinner = false;
-	int turnTimeLeft = 60;
-	int brownCount = 8;
-	int orangeCount = 9;
-	int curTeam = 0;
-	int winTeam = -1;
-	std::string curRole = "master";
+    bool isSlotFree(int team, int slotIndex) const {
+        return slots[team][slotIndex] == "free";
+    }
 
-	GameStats(const std::vector<WordCard>& board)
-		:gameBoard(board)
-	{
-		curTeam = 0;
-	}
+    void occupySlot(int team, int slotIndex, const std::string& name) {
+        slots[team][slotIndex] = name;
+    }
 
-	void nextTurn()
-	{
-		curTurn = (curTurn + 0b01) & 0b11;
-		switch (curTurn)
-		{
-		case 0b00:
-		{
-			curRole = "master";
-			curTeam = 0;
-			break;
-		}
-		case 0b01:
-		{
-			curRole = "player";
-			curTeam = 0;
-			break;
-		}
-		case 0b10:
-		{
-			curRole = "master";
-			curTeam = 1;
-			break;
-		}
-		case 0b11:
-		{
-			curRole = "player";
-			curTeam = 1;
-			break;
-		}
-		default:
-			throw std::runtime_error("Invalid curTurn value");
-		}
-		turnTimeLeft = 60;
-	}
-
-	bool checkWinner()
-	{
-		if (orangeCount == 0)
-		{
-			existsWinner = true;
-			return true;
-		}
-
-		if (brownCount == 0)
-		{
-			existsWinner = true;
-			return true;
-		}
-		return false;
-	}
-
-	void updateScore(int team)
-	{
-		if (team == 0)
-		{
-			orangeCount--;
-			std::cout << "\nUPD: blue team score is: " << orangeCount << '\n';
-		}
-		else if (team == 1)
-		{
-			brownCount--;
-			std::cout << "\nUPD: red team score is: " << orangeCount << '\n';
-		}
-		checkWinner();
-	}
-
-	float updateTimer()
-	{
-		timeLeft -= timer.restart().asSeconds();
-		if (timeLeft < 0.f)
-		{
-			timeLeft = 0.f;
-		}
-		return timeLeft;
-	}
-
-	void resetGame()
-	{
-		gameBoard.clear();
-		curTurn = 0;
-		existsWinner = false;
-		orangeCount = 9;
-		brownCount = 8;
-		curTeam = 0;
-		turnTimeLeft = 60;
-	}
-
-	void reveal(int order)
-	{
-		if (order < 0 || order > 23)
-			return;
-		gameBoard[order].isRevealed = true;
-	}
+    void freeSlot(int team, int slotIndex) {
+        slots[team][slotIndex] = "free";
+    }
 };
 
-struct GameSession
-{
-	GameStats gameState;
-	std::vector<Player> players;
-	bool isStarted = false;
+struct GameStats {
+    std::vector<WordCard> gameBoard;
+    sf::Clock turnTimer;
+    int turnTimeLeft = REGULAR_TURN_TIME;
+    int curTeam = 0; // 0: Blue, 1: Red
+    std::string curRole = "master"; // "master" or "player"
+    bool existsWinner = false;
+    int winTeam = -1;
+    int blueWordsLeft = 9;
+    int redWordsLeft = 8;
 
-	GameSession(const std::vector<WordCard>& board) : gameState(board) {}
+    GameStats(const std::vector<WordCard>& board) : gameBoard(board) { turnTimeLeft = FIRST_TURN_TIME; }
+
+    void nextTurn() {
+        if (curRole == "master") {
+            curRole = "player";
+        }
+        else {
+            curRole = "master";
+            curTeam = 1 - curTeam;
+        }
+        turnTimeLeft = REGULAR_TURN_TIME;
+        turnTimer.restart();
+    }
+
+    bool checkWinner() {
+        if (blueWordsLeft == 0) {
+            winTeam = 0;
+            existsWinner = true;
+            return true;
+        }
+        if (redWordsLeft == 0) {
+            winTeam = 1;
+            existsWinner = true;
+            return true;
+        }
+        return false;
+    }
+
+    void updateScore(int team) {
+        if (team == 0) {
+            blueWordsLeft--;
+            std::cout << "UPD: blue team words left: " << blueWordsLeft << '\n';
+        }
+        else if (team == 1) {
+            redWordsLeft--;
+            std::cout << "UPD: red team words left: " << redWordsLeft << '\n';
+        }
+        checkWinner();
+    }
+
+    void reveal(int order) {
+        if (order < 0 || order >= static_cast<int>(gameBoard.size())) return;
+        gameBoard[order].isRevealed = true;
+    }
+
+    float getCurrentTurnTimeLeft() const {
+        return static_cast<float>(turnTimeLeft) - turnTimer.getElapsedTime().asSeconds();
+    }
 };
 
-//player look-up functionality:
+struct GameSession {
+    GameStats gameState;
+    Lobby lobby;
+    std::vector<Player> players; // Changed to vector for simplicity
+    std::unordered_map<std::string, Player*> playerLookup;
+    bool isStarted = false;
 
-std::unordered_map<std::string, Player*> playerLookup;
+    GameSession(const std::vector<WordCard>& board) : gameState(board) {}
 
-void addPlayer(Player& player)
-{
-	playerLookup[player.name] = &player;
-	std::cout << playerLookup[player.name]->name << " player added.\n";
-	std::cout << playerLookup[player.name]->socket << " socket added.\n";
+    void addPlayer(Player& player) {
+        playerLookup[player.name] = &player;
+    }
+
+    void handlePacket(sf::Packet& packet, Player& sender);
+    // Break down handlers
+    void handleParams(sf::Packet& packet, Player& sender);
+    void handleBoard(sf::Packet& packet, Player& sender);
+    void handleStart(sf::Packet& packet, Player& sender);
+    void handlePrep(sf::Packet& packet, Player& sender);
+    void handleSlot(sf::Packet& packet, Player& sender);
+    void handleFree(Player& sender);
+    void handleCard(sf::Packet& packet, Player& sender);
+    void handleFlag(sf::Packet& packet, Player& sender);
+    void handleChat(sf::Packet& packet, Player& sender);
+    void handleEnd(Player& sender);
+};
+
+// Utility functions
+std::vector<int> getRandomUniqueNumbers(int maxNumber, int count) {
+    if (count > maxNumber + 1) throw std::invalid_argument("Count exceeds max");
+    std::unordered_set<int> uniqueNumbers;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, maxNumber);
+    while (uniqueNumbers.size() < static_cast<size_t>(count)) {
+        uniqueNumbers.insert(dis(gen));
+    }
+    return std::vector<int>(uniqueNumbers.begin(), uniqueNumbers.end());
 }
 
-//funcs:
-std::vector<int> getRandomUniqueNumbers(int maxNumber, int count)
-{
-	if (count > maxNumber + 1)
-	{
-		throw std::invalid_argument("Count cannot be greater than maxNumber + 1");
-	}
+std::vector<WordCard> loadWords(const std::filesystem::path& filePath) {
+    std::vector<std::string> allWords;
+    std::ifstream file(filePath);
+    if (!file) throw std::runtime_error("Can't open file: " + filePath.string());
+    std::string word;
+    while (std::getline(file, word)) {
+        allWords.push_back(word);
+    }
+    file.close();
 
-	std::unordered_set<int> uniqueNumbers;
-	std::random_device rd;
-	std::mt19937 gen(rd());
-	std::uniform_int_distribution<> dis(0, maxNumber);
+    if (allWords.size() < 25) throw std::runtime_error("Insufficient words in file");
 
-	while (uniqueNumbers.size() < count)
-	{
-		uniqueNumbers.insert(dis(gen));
-	}
-	return std::vector<int>(uniqueNumbers.begin(), uniqueNumbers.end());
+    // Select 24 random unique indices
+    auto selectedIndices = getRandomUniqueNumbers(static_cast<int>(allWords.size()) - 1, 24);
+
+    // Assign colors: 9 blue, 8 red, 6 neutral, 1 assassin
+    std::vector<Color> colors(9, BLUE);
+    colors.insert(colors.end(), 8, RED);
+    colors.insert(colors.end(), 6, NEUTRAL);
+    colors.push_back(ASSASSIN);
+
+    // Shuffle colors for random assignment
+    std::shuffle(colors.begin(), colors.end(), std::mt19937(std::random_device{}()));
+
+    // Create cards with random board positions
+    auto positions = getRandomUniqueNumbers(23, 24);
+    std::vector<WordCard> wordsVec;
+    for (size_t i = 0; i < 24; ++i) {
+        wordsVec.emplace_back(positions[i], allWords[selectedIndices[i]], colors[i]);
+    }
+
+    // Sort by order for board layout
+    std::sort(wordsVec.begin(), wordsVec.end(), [](const WordCard& a, const WordCard& b) {
+        return a.order < b.order;
+        });
+
+    return wordsVec;
 }
-std::vector<int> getRandomUniqueNumbersAsc(int maxNumber, int count)
-{
-	if (count > maxNumber + 1)
-	{
-		throw std::invalid_argument("Count cannot be greater than maxNumber + 1");
-	}
 
-	std::unordered_set<int> uniqueNumbers;
-	std::random_device rd;
-	std::mt19937 gen(rd());
-	std::uniform_int_distribution<> dis(0, maxNumber);
-
-	while (uniqueNumbers.size() < count)
-	{
-		uniqueNumbers.insert(dis(gen));
-	}
-	std::vector<int> res(uniqueNumbers.begin(), uniqueNumbers.end());
-	std::sort(res.begin(), res.end());
-	return res;
+sf::Packet createLobbyStatePacket(const Lobby& lobby) {
+    sf::Packet packet;
+    packet << "update_lobby";
+    for (int team = 0; team < 2; ++team) {
+        for (size_t slot = 0; slot < lobby.slots[team].size(); ++slot) {
+            std::string nick = lobby.slots[team][slot];
+            packet << nick << team << static_cast<int>(slot);
+        }
+    }
+    return packet;
 }
-std::vector<WordCard> getWordsList(const std::filesystem::path& filePath, std::vector<int>& inds)
-{
-	int orangeCount = 9;
-	int brownCount = 8;
-	int whiteCount = 6;
-	int blackCount = 1;
-	int order = 0;
-	int ind = 0;
-	std::vector<int> orderVec = getRandomUniqueNumbers(23, 24);
-	std::vector<WordCard> wordsVec;
-	std::ifstream words(filePath);
-	if (!words)
-	{
-		throw std::runtime_error("Can't open file: " + filePath.filename().string());
-	}
-	std::string word;
-	while (std::getline(words, word) && ind < inds.size())
-	{
-		if (orangeCount > 0 && order == inds[ind])
-		{
-			WordCard elem = WordCard(orderVec[ind++], word, ORANGE);
-			order++;
-			wordsVec.push_back(elem);
-			orangeCount--;
-		}
-		else if (brownCount > 0 && order == inds[ind])
-		{
-			WordCard elem = WordCard(orderVec[ind++], word, BROWN);
-			order++;
-			wordsVec.push_back(elem);
-			brownCount--;
-		}
-		else if (whiteCount > 0 && order == inds[ind])
-		{
-			WordCard elem = WordCard(orderVec[ind++], word, WHITE);
-			order++;
-			wordsVec.push_back(elem);
-			whiteCount--;
-		}
-		else if (blackCount > 0 && order == inds[ind])
-		{
-			WordCard elem = WordCard(orderVec[ind++], word, BLACK);
-			order++;
-			wordsVec.push_back(elem);
-			blackCount--;
-		}
-		else
-		{
-			order++;
-		}
-	}
-	words.close();
-	return wordsVec;
+
+bool sendSlotApprove(sf::TcpSocket& socket, bool approved) {
+    sf::Packet packet;
+    packet << "slot" << (approved ? 1 : 0);
+    return socket.send(packet) == sf::Socket::Done;
 }
-sf::Packet getLobbyState(std::vector<Player>& players)
-{
-	sf::Packet packet;
-	packet << "update_lobby";
-	bool res = true;
-	for (int j = 0; j <= 1; ++j)
-	{
-		for (int i = 0; i < slots[0].size(); ++i)
-		{
-			std::string nick = slots[j][i];
-			if (nick == "free")
-			{
-				packet << nick << j << i;
-				std::cout << "\n*\n" << " nick: " << nick << "\n team: " << j << "\n slot: " << i << "\n*\n";
-			}
-			else
-			{
-				int team = j;
-				packet << nick << team << i;
-				std::cout << "\n*\n" << " nick: " << nick << "\n team: " << j << "\n slot: " << i << "\n*\n";
-			}
 
-		}
-	}
-	return packet;
+bool sendLobbyState(sf::TcpSocket& socket, sf::Packet& packet) {
+    return socket.send(packet) == sf::Socket::Done;
 }
-bool sendSlotAprove(int isDone, sf::TcpSocket& socket)
-{
-	sf::Packet request;
-	request << "slot" << isDone;
-	if (socket.send(request) == sf::Socket::Done)
-	{
-		return true;
-	}
-	std::cerr << "\nSlot approve sending failed\n";
-	return false;
+
+bool sendTeamSize(sf::TcpSocket& socket, int size) {
+    sf::Packet packet;
+    packet << "size" << size;
+    return socket.send(packet) == sf::Socket::Done;
 }
-bool sendLobbyState(sf::TcpSocket& socket, sf::Packet& msg)
-{
-	if (socket.send(msg) == sf::Socket::Done)
-	{
-		return true;
-	}
-	std::cerr << "\nLobby state sending failed\n";
-	return false;
+
+bool sendStart(sf::TcpSocket& socket) {
+    sf::Packet packet;
+    packet << "start";
+    return socket.send(packet) == sf::Socket::Done;
 }
-bool sendTeamSize(sf::TcpSocket& socket, int size)
-{
-	sf::Packet teamSize;
-	teamSize << "size" << size;
-	if (socket.send(teamSize) == sf::Socket::Done)
-	{
-		return true;
-	}
-	std::cerr << "\nTeam size sending failed\n";
-	return false;
+
+bool sendWords(sf::TcpSocket& socket, Role role, const std::vector<WordCard>& board) {
+    sf::Packet packet;
+    packet << "board";
+    int colorToSend = (role == MASTER) ? -1 : 4; // 4 for hidden
+    for (const auto& card : board) {
+        int col = (colorToSend == -1) ? static_cast<int>(card.color) : colorToSend;
+        packet << card.gameWord << col;
+    }
+    return socket.send(packet) == sf::Socket::Done;
 }
-bool sendStart(sf::TcpSocket& socket)
-{
-	sf::Packet start;
-	start << "start";
-	if (socket.send(start) == sf::Socket::Done)
-	{
-		return true;
-	}
-	std::cerr << "\nStart sending failed\n";
-	return false;
-}
-bool sendWords(sf::TcpSocket& socket, std::string role, GameSession& session)
-{
-	sf::Packet wordPacket;
-	if (role == "master")
-	{
-		wordPacket << "board";
-		for (const auto& card : session.gameState.gameBoard)
-		{
-			wordPacket << card.gameWord << static_cast<int>(card.color);
 
-			std::cout << "\n#\n" << card.gameWord << static_cast<int>(card.color) << card.order << "\n#\n";
-		}
-	}
-	else
-	{
-		wordPacket << "board";
-		for (const auto& card : session.gameState.gameBoard)
-		{
-			wordPacket << card.gameWord << 4;
-		}
-	}
-
-	if (socket.send(wordPacket) == sf::Socket::Done);
-	{
-		return true;
-	}
-	std::cerr << "\nWordboard sending failed\n";
-	return false;
-
-}
-bool sendNextTurn(sf::TcpSocket& socket)
-{
-	sf::Packet resp;
-	resp << "next";
-	if (socket.send(resp) == sf::Socket::Done)
-	{
-		return true;
-	}
-	std::cerr << "\nNext turn sending failed\n";
-	return false;
-}
-bool sendReveal(sf::TcpSocket& socket, int order, int color)
-{
-	sf::Packet resp;
-	resp << "reveal" << order << color;
-	if (socket.send(resp) == sf::Socket::Done)
-	{
-		std::cout << "\nSent reveal packet: order=" << order << " color=" << color << '\n';
-		return true;
-	}
-	std::cerr << "\nReaviling sending failed\n";
-	return false;
-}
-bool sendFlagUpdate(sf::TcpSocket& socket, int order, int flagInd)
-{
-	sf::Packet resp;
-	resp << "flag" << order << flagInd;
-	if (socket.send(resp) == sf::Socket::Done)
-	{
-		return true;
-	}
-	std::cerr << "\nFlag update sending failed\n";
-	return false;
-}
-bool sendAddTime(sf::TcpSocket& socket, int timeVal)
-{
-	sf::Packet resp;
-	resp << "timer_add" << timeVal;
-	if (socket.send(resp) == sf::Socket::Done)
-	{
-		return true;
-	}
-	std::cerr << "\nAdd time to timer sending failed\n";
-	return false;
-}
-bool sendUpdateTimer(sf::TcpSocket& socket, float length)
-{
-	sf::Packet resp;
-	resp << "update_timer" << length;
-	if (socket.send(resp) == sf::Socket::Done)
-	{
-		return true;
-	}
-	std::cerr << "\nUpdate timer sending failed\n";
-	return false;
-}
-bool sendTimerSetUp(sf::TcpSocket& socket, float val, int team)
-{
-	sf::Packet resp;
-	resp << "set_timer" << team << val;
-	if (socket.send(resp) == sf::Socket::Done)
-	{
-		return true;
-	}
-	std::cerr << "\nTime set up sending failed\n";
-	return false;
-}
-bool sendChatMsg(sf::TcpSocket& socket, int team, std::string msg)
-{
-	sf::Packet resp;
-	resp << "chat" << team << msg;
-	if (socket.send(resp) == sf::Socket::Done)
-	{
-		return true;
-	}
-	std::cerr << "\nChat msg sending failed\n";
-	return false;
-}
-bool sendWinner(sf::TcpSocket& socket, int team)
-{
-	sf::Packet resp;
-	resp << "winner" << team;
-	if (socket.send(resp) == sf::Socket::Done)
-	{
-		std::cout << "\nThe winner team is: " << team << ' ';
-		return true;
-	}
-	std::cerr << "\nWinner sending failed\n";
-	return false;
-}
-void handlePacket(sf::Packet& packet, Player& sender, GameSession& session, std::vector<Player>& players)
-{
-	std::cout << "got msg from: " << sender.name << '\n';
-	std::string command;
-	packet >> command;
-	if (command == "params")
-	{
-		std::string role;
-		int team;
-		packet >> role >> team;
-
-		sender.setRole(role);
-		sender.setTeam(team);
-
-		sf::Packet response;
-		response << "role_set" << role << team;
-		sender.socket->send(response);
-	}
-	else if (command == "board" && sender.isHost)
-	{
-		std::cout << "\nstart msg got from: " << sender.name << "\n";
-		session.isStarted = true;
-
-		for (auto& player : players)
-		{
-			std::cout << "\n**\n";
-			sf::Packet wordPacket;
-
-			if (sendWords(*player.socket, player.role, session))
-			{
-				std::cout << "\nwords sent to: " << player.name << ".\n";
-			}
-		}
-	}
-	else if (command == "start" && sender.isHost)
-	{
-		session.gameState.timer.restart().asSeconds();
-		for (auto& player : players)
-		{
-			if (sendStart(*player.socket))
-			{
-				sendTimerSetUp(*player.socket, session.gameState.timerVal, 0);
-				std::cout << "Start signal sent to " << player.name << '\n';
-			}
-		}
-	}
-	else if (command == "prep" && sender.isHost)
-	{
-		int size = 0;
-		packet >> size;
-		if (size > 0)
-		{
-			slots[0].resize(size);
-			slots[1].resize(size);
-			for (auto& slot : slots[0])
-			{
-				slot = "free";
-				std::cout << slot << " ";
-			}
-			std::cout << "\n";
-			for (auto& slot : slots[1])
-			{
-				slot = "free";
-				std::cout << slot << " ";
-			}
-			std::cout << "\n";
-
-			std::cout << "lobby was created.\n" << "Each team has " << size << " slots\n";
-
-		}
-	}
-	else if (command == "slot")
-	{
-		std::cout << "\nGot request on slot changing\n";
-		int team;
-		int order;
-		packet >> team >> order;
-
-		if (slots[team][order] == "free")
-		{
-			if (sender.slot == -1)
-			{
-				sender.setTeam(team);
-				sender.setRole(order == 0 ? "master" : "player");
-				slots[team][order] = sender.name;
-				sender.slot = order;
-			}
-			else
-			{
-				slots[sender.team][sender.slot] = "free";
-				std::cout << "Slot " << sender.slot << " in team " << sender.team << " now freed. \n";
-				sender.setTeam(team);
-				sender.setRole(order == 0 ? "master" : "player");
-				slots[team][order] = sender.name;
-				sender.slot = order;
-			}
-
-			sendSlotAprove(1, *sender.socket);
-			std::cout << "Slot " << order << " in team " << team << " now taken by " << sender.name << '\n';
-			sf::Packet lobbyState = getLobbyState(players);
-
-			for (const auto& player : players)
-			{
-				std::cout << "socket: " << sender.socket << "\nname: " << sender.name << '\n';
-				sendLobbyState(*player.socket, lobbyState);
-				std::cout << "Lobby state sent to " << sender.name << "\n\n";
-			}
-		}
-		else
-		{
-			sendSlotAprove(0, *sender.socket);
-			std::cout << "slot is occupied by " << slots[team][order] << "\n";
-		}
-	}
-	else if (command == "free" && sender.slot != (-1))
-	{
-
-		slots[sender.team][sender.slot] = "free";
-		std::cout << "Slot " << sender.slot << " in team " << sender.team << " now freed. \n";
-		sender.setTeam(-1);
-		sender.slot = -1;
-		sender.setRole("spec");
-		sendSlotAprove(1, *sender.socket);
-
-		sf::Packet lobbyState = getLobbyState(players);
-		for (const auto& player : players)
-		{
-			std::cout << "socket: " << sender.socket << "\nname: " << sender.name << '\n';
-			sendLobbyState(*player.socket, lobbyState);
-			std::cout << "Lobby state sent to " << sender.name << "\n\n";
-		}
-	}
-	else if (command == "card")
-	{
-		int order = 0;
-
-		packet >> order;
-
-		if (sender.team == session.gameState.curTeam)
-		{
-			if (sender.role == "player")
-			{
-				if (session.gameState.curRole == "player")
-				{
-					int cardCol = static_cast<int>(session.gameState.gameBoard[order].color);
-					session.gameState.gameBoard[order].isRevealed = true;
-
-					std::cout << "\n################\nsender team: " << sender.team << "\nclicked card color to int: "
-						<< cardCol << "\nplayer role: " << sender.role
-						<< "\ncurrent role to play: " << session.gameState.curRole
-						<< "\ncurrent team to play: " << session.gameState.curTeam << "\n################\n";
-
-					if (cardCol - sender.team != 1)
-					{
-						session.gameState.reveal(order);
-						session.gameState.nextTurn();
-						for (const auto& player : players)
-						{
-							sendReveal(*player.socket, order, cardCol);
-							if (cardCol == 3)
-							{
-								sendWinner(*player.socket, session.gameState.curTeam);
-							}
-							else if(cardCol==0)
-							{
-								sendNextTurn(*player.socket);
-							}
-							else
-							{
-								session.gameState.updateScore(session.gameState.curTeam);
-							}
-						}
-						session.gameState.timer.restart();
-						std::cout << "\nRevealed word No. " << order << '\n';
-						std::cout << "\n Cur turn: " << session.gameState.curTurn << "\n";
-						std::cout << "\n Cur role: " << session.gameState.curRole << "\n";
-						std::cout << "\n Cur team: " << session.gameState.curTeam << "\n";
-
-					}
-					else if (cardCol - sender.team == 1)
-					{
-						for (const auto& player : players)
-						{
-							sendAddTime(*player.socket, 15);
-							if (sendReveal(*player.socket, order, cardCol))
-							{
-								std::cout << "\n Sent reveal msg to " << player.name << '\n';
-							}
-						}
-						std::cout << "\nRevealed word No. " << order << '\n';
-						session.gameState.reveal(order);
-						session.gameState.updateScore(sender.team);
-						session.gameState.turnTimeLeft += 15;
-						if (session.gameState.existsWinner)
-						{
-							for (const auto& player : players)
-							{
-								sendWinner(*player.socket, session.gameState.curTeam);
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	else if (command == "flag")
-	{
-
-	}
-	else if (command == "chat")
-	{
-		if (sender.team == session.gameState.curTeam)
-		{
-			if (sender.role == "master")
-			{
-				std::string msg;
-				std::string res;
-				while (packet >> msg)
-				{
-					res += msg + " ";
-				}
-				if (!res.empty())
-				{
-					res.pop_back();
-				}
-				std::cout << "\n parsed msg: " << res << '\n';
-				for (const auto& client : players)
-				{
-
-					if (sendChatMsg(*client.socket, session.gameState.curTeam, res))
-					{
-						std::cout << "\n Sent " << sender.name << "'s msg to client " << client.name << '\n';
-					}
-					if (sendNextTurn(*client.socket))
-					{
-						std::cout << "\n Sent " << sender.name << " next turn alert.\n";
-					}
-				}
-				session.gameState.nextTurn();
-				session.gameState.timer.restart();
-				std::cout << "\n Cur turn: " << session.gameState.curTurn << "\n";
-				std::cout << "\n Cur role: " << session.gameState.curRole << "\n";
-				std::cout << "\n Cur team: " << session.gameState.curTeam << "\n";
-			}
-		}
-	}
+bool sendNextTurn(sf::TcpSocket& socket) {
+    sf::Packet packet;
+    packet << "next";
+    return socket.send(packet) == sf::Socket::Done;
 }
 
 
+bool sendReveal(sf::TcpSocket& socket, int order, int color) {
+    sf::Packet packet;
+    packet << "reveal" << order << color;
+    return socket.send(packet) == sf::Socket::Done;
+}
 
-int main()
-{
-	sf::Clock broadcastClock;
-	const sf::Time BROADCAST_INTERVAL = sf::seconds(1.0f);
-	SetConsoleOutputCP(CP_UTF8);
-	std::vector<int> numCol = getRandomUniqueNumbersAsc(MAX_WORDS, 24);
-	std::vector<WordCard> words = getWordsList(WORDS_PATH, numCol);
-	std::sort(words.begin(), words.end(), [](const WordCard& a, const WordCard& b)
-		{
-			return a.order < b.order;
-		});
+bool sendFlagUpdate(sf::TcpSocket& socket, int order, int flagInd) {
+    sf::Packet packet;
+    packet << "flag" << order << flagInd;
+    return socket.send(packet) == sf::Socket::Done;
+}
 
-	GameSession game(words);
+bool sendAddTime(sf::TcpSocket& socket, int timeVal) {
+    sf::Packet packet;
+    packet << "timer_add" << timeVal;
+    return socket.send(packet) == sf::Socket::Done;
+}
 
-	sf::TcpListener listener;
-	if (listener.listen(54000) != sf::Socket::Done)
-	{
-		std::cerr << "Error: Unable to bind listener to port 54000.\n";
-		return -1;
-	}
+bool sendUpdateTimer(sf::TcpSocket& socket, float length) {
+    sf::Packet packet;
+    packet << "update_timer" << length;
+    return socket.send(packet) == sf::Socket::Done;
+}
 
-	listener.setBlocking(false);
+bool sendTimerSetup(sf::TcpSocket& socket, float val, int team) {
+    sf::Packet packet;
+    packet << "set_timer" << team << val;
+    return socket.send(packet) == sf::Socket::Done;
+}
 
-	sf::SocketSelector  selector;
-	selector.add(listener);
+bool sendNextAndTimer(sf::TcpSocket& socket, int curTeam, std::string& curRole, float timeLeft) {
+    sf::Packet packet;
+    packet << "next" << curTeam << curRole;
+    socket.send(packet);
+    return sendTimerSetup(socket, timeLeft, curTeam);
+}
+bool sendChatMsg(sf::TcpSocket& socket, int team, const std::string& msg) {
+    sf::Packet packet;
+    packet << "chat" << team << msg;
+    return socket.send(packet) == sf::Socket::Done;
+}
 
-	std::vector<Player> clients;
-	static int nextClientId = 0;
+bool sendWinner(sf::TcpSocket& socket, int team) {
+    sf::Packet packet;
+    packet << "winner" << team;
+    return socket.send(packet) == sf::Socket::Done;
+}
 
-	std::cout << "Server is running. Waiting for clients...\n";
-	while (true)
-	{
-		if (selector.wait())
-		{
-			if (selector.isReady(listener))
-			{
-				auto newClient = std::make_unique<sf::TcpSocket>();
-				if (listener.accept(*newClient) == sf::Socket::Done)
-				{
-					sf::Packet helloPack;
-					if (newClient->receive(helloPack) == sf::Socket::Done)
-					{
-						int clientId = nextClientId++;
-						std::string command;
-						helloPack >> command;
-						if (command == "name")
-						{
-							std::string nickName;
-							helloPack >> nickName;
-							if (clientId == 0)
-							{
-								clients.push_back({ std::move(newClient), clientId, 0, -1, "spec", nickName, true });
-								addPlayer(clients.back());
-								std::cout << "tried to add player: " << clients.back().name << " to list.\n";
-							}
-							else
-							{
-								clients.push_back({ std::move(newClient), clientId, 0, -1,  "spec", nickName });
-								addPlayer(clients.back());
-								std::cout << "tried to add player: " << clients.back().name << " to list.\n";
-								sendTeamSize(*clients.back().socket, slots[0].size());
-								//sf::Packet lobbyState = getLobbyState(clients);
-								//sendLobbyState(*clients.back().socket, lobbyState);
-								std::cout << "sent team size to " << clients.back().name << '\n';
-							}
+// GameSession methods
+void GameSession::handlePacket(sf::Packet& packet, Player& sender) {
+    std::string command;
+    packet >> command;
+    std::cout << "Received command '" << command << "' from: " << sender.name << '\n';
 
-							std::cout << "New client: " << nickName << "with id: " << clientId << " connected\n";
-						}
-						selector.add(*clients.back().socket);
-					}
-					else
-					{
-						std::cerr << "Error: Failed to receive packet.\n";
-					}
-				}
-			}
-			else
-			{
-				for (size_t i = 0; i < clients.size(); ++i)
-				{
-					sf::TcpSocket& client = *clients[i].socket;
-					if (selector.isReady(client))
-					{
-						sf::Packet packet;
-						if (client.receive(packet) == sf::Socket::Done)
-						{
-							clients[i].lastActivityClock.restart();
-							handlePacket(packet, clients[i], game, clients);
-						}
-						else if (clients[i].lastActivityClock.getElapsedTime() > TIMEOUT)
-						{
-							std::cout << "Client " << clients[i].clientId << " timed out.\n";
-							selector.remove(client);
-							client.disconnect();
-							clients.erase(clients.begin() + i);
-							i--;
-						}
+    if (command == CMD_PARAMS) handleParams(packet, sender);
+    else if (command == CMD_BOARD) handleBoard(packet, sender);
+    else if (command == CMD_START) handleStart(packet, sender);
+    else if (command == CMD_PREP) handlePrep(packet, sender);
+    else if (command == CMD_SLOT) handleSlot(packet, sender);
+    else if (command == CMD_FREE) handleFree(sender);
+    else if (command == CMD_CARD) handleCard(packet, sender);
+    else if (command == CMD_FLAG) handleFlag(packet, sender);
+    else if (command == CMD_CHAT) handleChat(packet, sender);
+    else if (command == CMD_END) handleEnd(sender);
+}
 
-						if (broadcastClock.getElapsedTime() >= BROADCAST_INTERVAL && game.isStarted)
-						{
-							float val = game.gameState.timeLeft;
+void GameSession::handleParams(sf::Packet& packet, Player& sender) {
+    std::string roleStr;
+    int team;
+    packet >> roleStr >> team;
 
-							for (auto& client : clients)
-							{
-								sendUpdateTimer(*client.socket, val);
-							}
+    Role newRole = (roleStr == "master") ? MASTER : (roleStr == "player") ? PLAYER : SPECTATOR;
+    sender.setRole(newRole);
+    sender.setTeam(team);
 
-							broadcastClock.restart();
-						}
-					}
-				}
-			}
-		}
-	}
-	return 0;
+    sf::Packet response;
+    response << "role_set" << roleStr << team;
+    sender.socket->send(response);
+}
+
+void GameSession::handleBoard(sf::Packet& packet, Player& sender) {
+    if (!sender.isHost) return;
+    isStarted = true;
+    for (auto& player : players) {
+        sendWords(*player.socket, player.role, gameState.gameBoard);
+    }
+}
+
+void GameSession::handleStart(sf::Packet& packet, Player& sender) {
+    if (!sender.isHost) return;
+    isStarted = true;
+
+    gameState.turnTimeLeft = FIRST_TURN_TIME;
+    gameState.turnTimer.restart();
+
+    for (auto& player : players) {
+        sendStart(*player.socket);
+        sendTimerSetup(*player.socket, static_cast<float>(gameState.turnTimeLeft), gameState.curTeam);
+    }
+}
+
+void GameSession::handlePrep(sf::Packet& packet, Player& sender) {
+    if (!sender.isHost) return;
+    int size;
+    packet >> size;
+    if (size > 0) {
+        lobby.resizeTeams(size);
+        std::cout << "Lobby created with " << size << " slots per team.\n";
+    }
+}
+
+void GameSession::handleSlot(sf::Packet& packet, Player& sender) {
+    int team, order;
+    packet >> team >> order;
+
+    if (lobby.isSlotFree(team, order)) {
+        if (sender.slot != -1) {
+            lobby.freeSlot(sender.team, sender.slot);
+        }
+        sender.setTeam(team);
+        sender.setRole((order == 0) ? MASTER : PLAYER);
+        lobby.occupySlot(team, order, sender.name);
+        sender.slot = order;
+
+        sendSlotApprove(*sender.socket, true);
+        auto lobbyPacket = createLobbyStatePacket(lobby);
+        for (auto& player : players) {
+            sendLobbyState(*player.socket, lobbyPacket);
+        }
+    }
+    else {
+        sendSlotApprove(*sender.socket, false);
+    }
+}
+
+void GameSession::handleFree(Player& sender) {
+    if (sender.slot == -1) return;
+    lobby.freeSlot(sender.team, sender.slot);
+    sender.setTeam(-1);
+    sender.slot = -1;
+    sender.setRole(SPECTATOR);
+    sendSlotApprove(*sender.socket, true);
+
+    auto lobbyPacket = createLobbyStatePacket(lobby);
+    for (auto& player : players) {
+        sendLobbyState(*player.socket, lobbyPacket);
+    }
+}
+
+void GameSession::handleCard(sf::Packet& packet, Player& sender) {
+    if (sender.team != gameState.curTeam || sender.role != PLAYER || gameState.curRole != "player") return;
+
+    int order;
+    packet >> order;
+    if (order < 0 || order >= static_cast<int>(gameState.gameBoard.size())) return;
+
+    Color col = gameState.gameBoard[order].color;
+    int colInt = static_cast<int>(col);
+    int otherTeam = 1 - gameState.curTeam;
+
+    gameState.reveal(order);
+
+    for (auto& player : players) {
+        sendReveal(*player.socket, order, colInt);
+    }
+
+    if (col == ASSASSIN) {
+        gameState.winTeam = otherTeam;
+        gameState.existsWinner = true;
+        for (auto& player : players) {
+            sendWinner(*player.socket, otherTeam);
+        }
+    }
+    else if (col == NEUTRAL) {
+        gameState.nextTurn();
+        gameState.turnTimer.restart();
+        for (auto& player : players) {
+            sendNextAndTimer(*player.socket, gameState.curTeam, gameState.curRole, static_cast<float>(gameState.turnTimeLeft));
+        }
+    }
+    else if (colInt == gameState.curTeam + 1) { // Own color
+        gameState.updateScore(gameState.curTeam);
+        gameState.turnTimeLeft += CORRECT_GUESS_TIME_BONUS;
+        for (auto& player : players) {
+            sendAddTime(*player.socket, CORRECT_GUESS_TIME_BONUS);
+        }
+        if (gameState.existsWinner) {
+            for (auto& player : players) {
+                sendWinner(*player.socket, gameState.winTeam);
+            }
+        }
+    }
+    else { // Opponent's color
+        gameState.updateScore(otherTeam);
+        gameState.nextTurn();
+        gameState.turnTimer.restart();
+        for (auto& player : players) {
+            sendNextAndTimer(*player.socket, gameState.curTeam, gameState.curRole, static_cast<float>(gameState.turnTimeLeft));
+        }
+        if (gameState.existsWinner) {
+            for (auto& player : players) {
+                sendWinner(*player.socket, gameState.winTeam);
+            }
+        }
+    }
+}
+
+void GameSession::handleFlag(sf::Packet& packet, Player& sender) {
+    // TODO: Implement flag handling if needed
+}
+
+void GameSession::handleEnd(Player& sender) {
+    if (sender.team != gameState.curTeam ||
+        sender.role != (gameState.curRole == "master" ? MASTER : PLAYER))
+        return;
+
+    gameState.nextTurn();
+    for (auto& player : players) {
+        sendNextAndTimer(*player.socket, gameState.curTeam, gameState.curRole, static_cast<float>(gameState.turnTimeLeft));
+    }
+}
+
+void GameSession::handleChat(sf::Packet& packet, Player& sender) {
+    if (sender.team != gameState.curTeam || sender.role != MASTER || gameState.curRole != "master") return;
+
+    std::string msg, fullMsg;
+    while (packet >> msg) 
+    {
+        fullMsg += msg + " ";
+    }
+    if (!fullMsg.empty()) fullMsg.pop_back();
+
+    for (auto& player : players) {
+        sendChatMsg(*player.socket, gameState.curTeam, fullMsg);
+        sendNextAndTimer(*player.socket, gameState.curTeam, gameState.curRole, static_cast<float>(gameState.turnTimeLeft));
+
+    }
+    gameState.nextTurn();
+    gameState.turnTimer.restart();
+}
+
+int main() {
+    std::cout << "Local address (getLocalAddress): " << sf::IpAddress::getLocalAddress() << "\n";
+    std::cout << "Public address (getPublicAddress): " << sf::IpAddress::getPublicAddress() << "\n";
+
+    SetConsoleOutputCP(CP_UTF8);
+    auto words = loadWords(WORDS_PATH);
+    GameSession game(words);
+
+    sf::TcpListener listener;
+    if (listener.listen(54000) != sf::Socket::Done) {
+        std::cerr << "Error binding to port 54000.\n";
+        return -1;
+    }
+
+    listener.setBlocking(false);
+    sf::SocketSelector selector;
+    selector.add(listener);
+
+    static int nextClientId = 0;
+    sf::Clock broadcastClock;
+
+    std::cout << "Server running. Waiting for clients...\n";
+    while (true) {
+        const sf::Time SELECTOR_TIMEOUT = sf::milliseconds(100);
+        if (selector.wait(SELECTOR_TIMEOUT)) {
+            if (selector.isReady(listener)) {
+                auto newSocket = std::make_unique<sf::TcpSocket>();
+                if (listener.accept(*newSocket) == sf::Socket::Done) {
+                    sf::Packet helloPack;
+                    if (newSocket->receive(helloPack) == sf::Socket::Done) {
+                        std::string command;
+                        helloPack >> command;
+                        if (command == CMD_NAME) {
+                            std::string nickName;
+                            helloPack >> nickName;
+                            bool isHost = (nextClientId == 0);
+                            game.players.push_back({ std::move(newSocket), nextClientId++, -1, -1, SPECTATOR, nickName, isHost });
+                            game.addPlayer(game.players.back());
+                            selector.add(*game.players.back().socket);
+
+                            if (!isHost) {
+                                sendTeamSize(*game.players.back().socket, static_cast<int>(game.lobby.slots[0].size()));
+                            }
+                            std::cout << "New client: " << nickName << " (ID: " << game.players.back().clientId << ") connected.\n";
+                        }
+                    }
+                }
+            }
+            else {
+                for (size_t i = 0; i < game.players.size(); ++i) {
+                    auto& player = game.players[i];
+                    if (selector.isReady(*player.socket)) {
+                        sf::Packet packet;
+                        auto status = player.socket->receive(packet);
+                        if (status == sf::Socket::Done) {
+                            player.lastActivityClock.restart();
+                            game.handlePacket(packet, player);
+                        }
+                        else if (status == sf::Socket::Disconnected || player.lastActivityClock.getElapsedTime() > TIMEOUT) {
+                            std::cout << "Client " << player.clientId << " disconnected/timed out.\n";
+                            selector.remove(*player.socket);
+                            player.socket->disconnect();
+                            game.players.erase(game.players.begin() + i);
+                            --i;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle turn timer broadcasting and expiration
+        if (game.isStarted && broadcastClock.getElapsedTime() >= BROADCAST_INTERVAL) {
+            float currentTimeLeft = game.gameState.getCurrentTurnTimeLeft();
+            if (currentTimeLeft <= 0.0f) {
+                game.gameState.nextTurn();
+                game.gameState.turnTimer.restart();
+                for (auto& player : game.players) {
+                    sendNextAndTimer(*player.socket, game.gameState.curTeam, game.gameState.curRole, static_cast<float>(game.gameState.turnTimeLeft));
+                }
+            }
+            else {
+                for (auto& player : game.players) {
+                    sendUpdateTimer(*player.socket, currentTimeLeft);
+                }
+            }
+            broadcastClock.restart();
+        }
+    }
+    return 0;
 }

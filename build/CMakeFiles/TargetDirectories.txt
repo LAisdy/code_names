@@ -1,4 +1,0 @@
-D:/code/tests/code_names/build/CMakeFiles/ALL_BUILD.dir
-D:/code/tests/code_names/build/CMakeFiles/ZERO_CHECK.dir
-D:/code/tests/code_names/build/server/CMakeFiles/CodeNamesServer.dir
-D:/code/tests/code_names/build/client/CMakeFiles/CodeNamesClient.dir

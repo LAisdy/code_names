@@ -1,4 +1,5 @@
 ﻿#define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
+
 #include <iostream>
 #include <SFML/Network.hpp>
 #include <SFML/Graphics.hpp>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <codecvt>
 #include <locale>
+#include "NetworkClient.hpp"
 
 //u8 converter:
 std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
@@ -57,8 +59,10 @@ sf::Color BLACKCOL(0, 0, 0);
 sf::Color WHITECOL(255, 255, 255);
 sf::Color DARK_GRAY(57, 57, 57);
 sf::Color DEF_RED(153, 33, 23);
+sf::Color BRG_RED(213, 46, 32);
 sf::Color DEEP_RED(117, 25, 18);
 sf::Color DEF_BLUE(29, 97, 153);
+sf::Color BRG_BLUE(54, 145, 218);
 sf::Color DEEP_BLUE(23, 78, 122);
 sf::Color BRIGHT_RED(255, 47, 13);
 
@@ -71,16 +75,8 @@ sf::Vector2f CHAT_PANEL_DIMS = { 190.f, 85.f };
 
 std::string nickName;
 
-std::queue<sf::Packet> messageQueue;
-
 std::atomic<bool> isConnected = false;
 std::atomic<state> currentState = MENU;
-std::atomic<bool> threadStarted = false;
-std::atomic<bool> isListening{ false };
-
-std::mutex queueMutex;
-
-std::thread listeningThread;
 
 std::unordered_map<std::string, int> players;
 
@@ -94,6 +90,11 @@ void centerText(sf::Text& text, sf::RectangleShape& rect)
 	);
 }
 
+//get mouse pos in world coords:
+inline sf::Vector2f getMouseWorldPos(const sf::RenderWindow& window)
+{
+	return window.mapPixelToCoords(sf::Mouse::getPosition(window));
+}
 
 //sending msgs:
 
@@ -259,14 +260,18 @@ struct FlagPanel
 
 	bool isHoveringRed(sf::RenderWindow& window) const
 	{
-		sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-		return redFlag.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));
+		/*sf::Vector2i mousePos = sf::Mouse::getPosition(window);
+		return redFlag.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));*/
+		sf::Vector2f worldPos = getMouseWorldPos(window);
+		return redFlag.getGlobalBounds().contains(worldPos);
 	}
 
 	bool isHoveringGreen(sf::RenderWindow& window) const
 	{
-		sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-		return greenFlag.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));
+		/*sf::Vector2i mousePos = sf::Mouse::getPosition(window);
+		return greenFlag.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));*/	
+		sf::Vector2f worldPos = getMouseWorldPos(window);
+		return greenFlag.getGlobalBounds().contains(worldPos);
 	}
 
 
@@ -319,19 +324,28 @@ struct FlagPanel
 
 struct Timer
 {
+	sf::RectangleShape background;   
+	sf::RectangleShape foreground;   
+	sf::Text timeText;
+
 	sf::RectangleShape timerShape;
 	sf::Color startCol = sf::Color::Green;
 	sf::Color endCol = sf::Color::Red;
+	sf::Color backCol = DARK_GRAY;
+	sf::Color textCol = WHITECOL;
 
 	float timeSet = 0.f;
 	float timerWidth = 190.f;
-	float timeLeft = timeSet;
+	float timeLeft = 0.f;
 	bool isStopped = false;
 
-	Timer(float val)
+	Timer(float val=0.f)
 	{
 		timeSet = val;
 		timeLeft = val;
+		timerShape.setSize({ timerWidth,timerShape.getSize().y });
+		timerShape.setFillColor(startCol);
+		timerShape.setPosition(0.f, 0.f);
 	}
 
 	sf::Color interpolateColor(const sf::Color& start, const sf::Color& end, float factor)
@@ -344,22 +358,26 @@ struct Timer
 
 	void update(float leftTime)
 	{
-		float deltaTime = timeLeft - leftTime;
-		timeLeft = leftTime;
-		if (timeLeft < 0.f)
-		{
-			timeLeft = 0.f;
-		}
-		float curWidth = timerShape.getSize().x;
-		float step = curWidth - timerWidth * deltaTime / timeSet;
-		if (step < 0.f)
-		{
-			step = 0.f;
-		}
-		timerShape.setSize(sf::Vector2f(step, timerShape.getSize().y));
-
-		float factor = timeLeft / timeSet;
+		setFromServer(leftTime);
+		float factor = (timeSet > 0.f) ? (timeLeft / timeSet) : 0.f;
+		float newWidth = timerWidth * factor;
+		timerShape.setSize({ newWidth, timerShape.getSize().y });
 		timerShape.setFillColor(interpolateColor(endCol, startCol, factor));
+	}
+
+	void setSize(float width, float height)
+	{
+		timerWidth = width;
+		timerShape.setSize({ timerWidth, timerShape.getSize().y });
+	}
+	void setPosition(const sf::Vector2f& pos)
+	{
+		timerShape.setPosition(pos);
+	}
+	void setFromServer(float leftTime)
+	{
+		timeLeft = std::max(0.f, leftTime);
+		isStopped = (timeLeft <= 0.f);
 	}
 
 	void draw(sf::RenderWindow& window)
@@ -394,7 +412,8 @@ struct WordCard
 	{
 
 	}
-	WordCard& operator=(const WordCard& other) {
+	WordCard& operator=(const WordCard& other) 
+	{
 		if (this == &other) return *this;
 
 		order = other.order;
@@ -416,13 +435,13 @@ struct WordCard
 
 		flags.redFlag.setFillColor(DEF_RED);
 		flags.redFlag.setPosition(wordCard.getPosition().x + wordCard.getSize().x - 5 - flags.redFlag.getSize().x,
-			wordCard.getPosition().y + wordCard.getSize().y - 5 - flags.redFlag.getSize().y);
+							      wordCard.getPosition().y + wordCard.getSize().y - 5 - flags.redFlag.getSize().y);
 		col.toInteger() == 255 ? flags.redFlag.setOutlineColor(WHITECOL) : flags.redFlag.setOutlineColor(BLACKCOL);
 		flags.redFlag.setOutlineThickness(2.f);
 
 		flags.greenFlag.setFillColor(FOREST_GREEN);
 		flags.greenFlag.setPosition(wordCard.getPosition().x + wordCard.getSize().x - (5 + flags.greenFlag.getSize().x) * 2,
-			wordCard.getPosition().y + wordCard.getSize().y - (5 + flags.greenFlag.getSize().y));
+			                        wordCard.getPosition().y + wordCard.getSize().y - (5 + flags.greenFlag.getSize().y));
 		col.toInteger() == 255 ? flags.greenFlag.setOutlineColor(WHITECOL) : flags.greenFlag.setOutlineColor(BLACKCOL);
 		flags.greenFlag.setOutlineThickness(2.f);
 
@@ -460,20 +479,20 @@ struct WordCard
 
 	bool isHovering(sf::RenderWindow& window)
 	{
-		sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-		bool hoverCard = wordCard.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));
-		bool hoverRedFlag = flags.redFlag.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));
-		bool hoverGreenFlag = flags.greenFlag.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));
+		sf::Vector2f worldPos = getMouseWorldPos(window);
+		bool hoverCard = wordCard.getGlobalBounds().contains(worldPos);
+		bool hoverRedFlag = flags.redFlag.getGlobalBounds().contains(worldPos);
+		bool hoverGreenFlag = flags.greenFlag.getGlobalBounds().contains(worldPos);
 		return (hoverCard && !hoverRedFlag && !hoverGreenFlag);
 	}
 
 	bool isClicked(sf::Event& event, sf::RenderWindow& window)
 	{
-		bool isInCard = event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left &&
+		bool isInCard = (event.type == sf::Event::MouseButtonPressed) && event.mouseButton.button == sf::Mouse::Left &&
 			wordCard.getGlobalBounds().contains(window.mapPixelToCoords(sf::Vector2i(event.mouseButton.x, event.mouseButton.y)));
-		bool isInRedFlag = event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left &&
+		bool isInRedFlag = (event.type == sf::Event::MouseButtonPressed) && event.mouseButton.button == sf::Mouse::Left &&
 			flags.redFlag.getGlobalBounds().contains(window.mapPixelToCoords(sf::Vector2i(event.mouseButton.x, event.mouseButton.y)));
-		bool isInGreenFlag = sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left &&
+		bool isInGreenFlag = (event.type == sf::Event::MouseButtonPressed) && event.mouseButton.button == sf::Mouse::Left &&
 			flags.greenFlag.getGlobalBounds().contains(window.mapPixelToCoords(sf::Vector2i(event.mouseButton.x, event.mouseButton.y)));
 
 		return (isInCard && !isInRedFlag && !isInGreenFlag);
@@ -542,8 +561,10 @@ struct InputBox
 
 	bool isHovering(sf::RenderWindow& window)
 	{
-		sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-		return inputBox.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));
+		/*sf::Vector2i mousePos = sf::Mouse::getPosition(window);
+		return inputBox.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));*/
+		sf::Vector2f worldPos = getMouseWorldPos(window);
+		return inputBox.getGlobalBounds().contains(worldPos);
 	}
 	bool isClicked(sf::Event& event, sf::RenderWindow& window)
 	{
@@ -601,8 +622,10 @@ struct MenuBtn
 	int order;
 	bool isHovering(sf::RenderWindow& window)
 	{
-		sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-		return shape.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));
+		/*sf::Vector2i mousePos = sf::Mouse::getPosition(window);
+		return shape.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));*/
+		sf::Vector2f worldPos = getMouseWorldPos(window);
+		return shape.getGlobalBounds().contains(worldPos);
 	}
 	bool isClicked(sf::Event& event, sf::RenderWindow& window)
 	{
@@ -729,6 +752,9 @@ struct TeamPanel
 	sf::RectangleShape teamShape;
 	sf::RectangleShape chatShape;
 
+	sf::RectangleShape endTurnButton;
+	sf::Text endTurnText;
+
 	sf::RectangleShape hintButton;
 	sf::RectangleShape inputShape;
 	std::vector<sf::Text> chatMessages{};
@@ -745,6 +771,8 @@ struct TeamPanel
 	TeamPanel(sf::TcpSocket& socket, PlayerSlot& master, std::vector<PlayerSlot>& players, float timeSet = 0)
 		:mySocket(socket), masterSlot(master), playerSlots(players), timer(timeSet)
 	{
+		curMsg.setFont(font);
+		curMsg.setFillColor(WALNUT);
 	}
 
 	void setUpPanel(sf::Vector2f pos, sf::Vector2f orig, sf::Vector2f dims, sf::Color& col)
@@ -763,13 +791,17 @@ struct TeamPanel
 		chatShape.setFillColor(col);
 		curMsg.setFont(font);
 		curMsg.setFillColor(WALNUT);
+		timer.setSize(chatShape.getSize().x, 10.f); 
+		float tx = chatShape.getPosition().x;
+		float ty = chatShape.getPosition().y - timer.timerShape.getSize().y - 10.f; 
+		timer.setPosition({ tx, ty });
+		timer.isStopped = true;
 	}
 
 	void setUpHintButton(sf::Color& col)
 	{
 		hintButton.setSize({ 20.f,20.f });
 		hintButton.setPosition(chatShape.getPosition().x + chatShape.getSize().x - 25, chatShape.getPosition().y + chatShape.getSize().y - 25);
-		//std::cout << "\nhintPos: " << hintButton.getPosition().x << " " << hintButton.getPosition().y << std::endl;
 		hintButton.setOrigin(0.f, 0.f);
 		hintButton.setFillColor(col);
 	}
@@ -782,18 +814,30 @@ struct TeamPanel
 		inputShape.setFillColor(col);
 	}
 
+
 	void setHint(std::string& word, int count)
 	{
 		hintWord = word;
 		hintCount = count;
 	}
 
-	void setUpTimer()
+	void setUpEndTurnButton(sf::Font& font)
 	{
-		timer.timerShape.setSize({ 190.f, 10.f });
-		timer.timerShape.setPosition({ chatShape.getPosition().x, chatShape.getPosition().y - 20 });
-		timer.timerShape.setFillColor(sf::Color::Green);
+		endTurnButton.setSize({ 100.f, 28.f }); 
+		float x = teamShape.getPosition().x + teamShape.getSize().x - endTurnButton.getSize().x - 10.f;
+		float y = teamShape.getPosition().y + 10.f;
+		endTurnButton.setPosition({ x, y });
+		endTurnButton.setFillColor(SANDSTONE);
+		endTurnButton.setOrigin(0.f, 0.f);
+
+		endTurnText.setFont(font);
+		endTurnText.setString(sf::String::fromUtf8("End Turn", "End Turn" + 0)); 
+		endTurnText.setString("End Turn");
+		endTurnText.setCharacterSize(16);
+		endTurnText.setFillColor(DARK_UMBER);
+		centerText(endTurnText, endTurnButton);
 	}
+
 
 	void decreaseTimer(float deltaTime)
 	{
@@ -815,14 +859,14 @@ struct TeamPanel
 
 	bool isHoveringChat(sf::RenderWindow& window)
 	{
-		sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-		return chatShape.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));
+		sf::Vector2f worldPos = getMouseWorldPos(window);
+		return chatShape.getGlobalBounds().contains(worldPos);
 	}
 
 	bool isHoveringHint(sf::RenderWindow& window)
 	{
-		sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-		return hintButton.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));
+		sf::Vector2f worldPos = getMouseWorldPos(window);
+		return hintButton.getGlobalBounds().contains(worldPos);
 	}
 
 	bool isClickedHint(sf::Event& event, sf::RenderWindow& window)
@@ -833,14 +877,26 @@ struct TeamPanel
 
 	bool isHoveringInput(sf::RenderWindow& window)
 	{
-		sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-		return inputShape.getGlobalBounds().contains(static_cast<sf::Vector2f>(mousePos));
+		sf::Vector2f worldPos = getMouseWorldPos(window);
+		return inputShape.getGlobalBounds().contains(worldPos);
 	}
 
 	bool isClickedInput(sf::Event& event, sf::RenderWindow& window)
 	{
 		return (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left &&
 			inputShape.getGlobalBounds().contains(window.mapPixelToCoords(sf::Vector2i(event.mouseButton.x, event.mouseButton.y))));
+	}
+
+	bool isHoveringEndTurn(sf::RenderWindow& window) const
+	{
+		sf::Vector2f worldPos = getMouseWorldPos(window);
+		return endTurnButton.getGlobalBounds().contains(worldPos);
+	}
+
+	bool isClickedEndTurn(sf::Event& event, sf::RenderWindow& window) const
+	{
+		if (event.type != sf::Event::MouseButtonPressed || event.mouseButton.button != sf::Mouse::Left) return false;
+		return endTurnButton.getGlobalBounds().contains(window.mapPixelToCoords(sf::Vector2i(event.mouseButton.x, event.mouseButton.y)));
 	}
 
 	void handleUtf8Input(sf::Event& event)
@@ -898,10 +954,7 @@ struct TeamPanel
 			{
 				curMsg.setCharacterSize(12);
 			}
-
-			//std::string temp= curMsg.getString();
-			//std::cout << temp << '\n';
-
+			
 			centerText(curMsg, inputShape);
 		}
 	}
@@ -932,7 +985,14 @@ struct TeamPanel
 				window.draw(chatMsgs[i + hintInd]);
 			}
 		}
+		float bx = teamShape.getPosition().x + teamShape.getSize().x - endTurnButton.getSize().x - 10.f;
+		float by = teamShape.getPosition().y + 10.f;
+		endTurnButton.setPosition({ bx, by });
+		centerText(endTurnText, endTurnButton);
 		window.draw(curMsg);
+		window.draw(endTurnButton);
+		window.draw(endTurnText);
+		timer.draw(window);
 	}
 };
 
@@ -1009,8 +1069,34 @@ struct GameMngr
 	TeamPanel& rightPanel;
 	EndGamePanel& endPanel;
 	int curTurn = 0b00;
+	int curTeam = 0;
 	int myTeam = 0;
 	bool isReady = false;
+
+	void setTurnFromServer(int teamIndex, bool masterTurn)
+	{
+		curTeam = teamIndex;
+
+		int teamBit = (teamIndex == 1) ? 0b10 : 0b00;
+		int roleBit = masterTurn ? 0b00 : 0b01;
+		curTurn = (teamBit | roleBit) & 0b11;
+
+		if (curTurn & 0b10) 
+		{
+			leftPanel.isActive = false;
+			leftPanel.timer.isStopped = true;
+			rightPanel.isActive = true;
+			rightPanel.timer.isStopped = false;
+		}
+		else 
+		{
+			leftPanel.isActive = true;
+			leftPanel.timer.isStopped = false;
+			rightPanel.isActive = false;
+			rightPanel.timer.isStopped = true;
+		}
+	}
+
 
 	void nextTurn()
 	{
@@ -1030,12 +1116,6 @@ struct GameMngr
 			rightPanel.isActive = false;
 			rightPanel.timer.isStopped = true;
 		}
-
-	//std::cout << "\n######################################################\n";
-	//std::cout << "\n Current turn: " << curTurn << '\n';
-	//std::cout << "\n Left Panel active: " << leftPanel.isActive << '\n';
-	//std::cout << "\n Right Panel active: " << rightPanel.isActive << '\n';
-	//std::cout << "\n######################################################\n";
 
 	}
 
@@ -1191,35 +1271,62 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 	}
 	else if (command == "set_timer")
 	{
-		int team = 0;
-		float tVal = 0.f;
-		packet >> team >> tVal;
-
-		if (team > 1 || team < 0)
-		{
-			std::cerr << "Invalid team index t : " << team << '\n';
-		}
-
-		if (team == 0)
-		{
-			gameScreen.leftPanel.timer.timeSet = tVal;
-			gameScreen.leftPanel.setUpTimer();
-		}
-		else
-		{
-			gameScreen.rightPanel.timer.timeSet = tVal;
-			gameScreen.rightPanel.setUpTimer();
-		}
+		int team;
+		float val;
+		packet >> team >> val;
+		TeamPanel& panel = (team == 0) ? gameScreen.leftPanel : gameScreen.rightPanel;
+		panel.timer.timeSet = val;
+		panel.timer.timeLeft = val;
+		panel.timer.timerShape.setSize({ 190.f, 10.f });
+		panel.isActive = true; // Assume sets active
+		TeamPanel& otherPanel = (team == 0) ? gameScreen.rightPanel : gameScreen.leftPanel;
+		otherPanel.isActive = false;
+		otherPanel.timer.isStopped = true;
 	}
 	else if (command == "update_timer")
 	{
 		float leftTime = 0.f;
 		packet >> leftTime;
-		(gameScreen.curTurn & 0b1) ? gameScreen.leftPanel.timer.update(leftTime) : gameScreen.rightPanel.timer.update(leftTime);
+		if (gameScreen.curTurn & 0b10)
+			gameScreen.rightPanel.timer.update(leftTime);
+		else
+			gameScreen.leftPanel.timer.update(leftTime);
 	}
+	else if (command == "timer_add")
+	{
+		int add;
+		packet >> add;
+		if (gameScreen.curTurn & 0b10)
+		{
+			gameScreen.rightPanel.timer.timeSet += add;
+			gameScreen.rightPanel.timer.timeLeft += add;
+			gameScreen.rightPanel.timer.update(gameScreen.rightPanel.timer.timeLeft);
+		}
+		else
+		{
+			gameScreen.leftPanel.timer.timeSet += add;
+			gameScreen.leftPanel.timer.timeLeft += add;
+			gameScreen.leftPanel.timer.update(gameScreen.leftPanel.timer.timeLeft);
+		}
+}
 	else if (command == "next")
 	{
 		gameScreen.nextTurn();
+	}
+	else if (command == "next_timer")
+	{
+		int team = 0;
+		float val = 0.f;
+		packet >> team >> val;
+
+		gameScreen.nextTurn();
+
+		float leftTime = 0.f;
+		packet >> leftTime;
+		if (gameScreen.curTurn & 0b10)
+			gameScreen.rightPanel.timer.update(leftTime);
+		else
+			gameScreen.leftPanel.timer.update(leftTime);
 	}
 	else if (command == "reveal")
 	{
@@ -1451,58 +1558,20 @@ void lobbyPrepHandling(InputBox& input, sf::Event event, InputBox& nick, sf::Ren
 	}
 }
 
-void hostingHandling(sf::Event event, InputBox& nick, sf::RenderWindow& window, sf::TcpSocket& socket, sf::IpAddress& serverIp,
+void hostingHandling(sf::Event event, InputBox& nick, sf::RenderWindow& window, NetworkClient& netClient, sf::IpAddress& serverIp,
 	unsigned short serverPort, LobbyPanel& lobbyLeft, LobbyPanel& lobbyRight, sf::Font& font)
 {
-	if (socket.connect(serverIp, serverPort) == sf::Socket::Done && !isConnected)
+	if (netClient.connect(serverIp, serverPort))
 	{
 		std::cout << "Connected to server" << std::endl;
 		isConnected = true;
-		isListening = true;
-		if (!threadStarted)
-		{
-			listeningThread = std::thread([&]()
-				{
+		netClient.startReceiveLoop();
 
-					std::cout << "Thread is working!" << '\n';
-					while (isListening)
-					{
-						sf::Packet line;
-						auto status = socket.receive(line);
-						if (status == sf::Socket::Done)
-						{
-							{
-								std::lock_guard<std::mutex> lock(queueMutex);
-								messageQueue.push(line);
-								std::cout << "\n pushed new packet\n";
-							}
-						}
-						else if (status == sf::Socket::Disconnected || currentState == MENU)
-						{
-							std::cout << "Disconnected from server." << '\n';
-							isListening.store(false);
-						}
-						else if (status == sf::Socket::NotReady)
-						{
-							std::this_thread::sleep_for(std::chrono::milliseconds(50));
-						}
-						else
-						{
-							std::cerr << "Error while receiving packet." << '\n';
-						}
-					}
-				});
-			listeningThread.detach();
-			threadStarted = true;
-		}
-		std::cout << "Listening to server now\n";
 		std::string name = nick.text.getString();
-
-		if (sendWelcomeMsg(name, socket))
+		if (sendWelcomeMsg(name, netClient.socket()))
 		{
-			std::cout << "Name sent to server" << '\n';
 			initializeLobbyPanel(font, lobbyLeft, lobbyRight, window);
-			if (sendLobbyParams(lobbyLeft.teamSize, socket))
+			if (sendLobbyParams(lobbyLeft.teamSize, netClient.socket()))
 			{
 				currentState = LOBBY;
 			}
@@ -1511,7 +1580,6 @@ void hostingHandling(sf::Event event, InputBox& nick, sf::RenderWindow& window, 
 	else
 	{
 		std::cerr << "Failed to connect to server" << std::endl;
-		sf::sleep(sf::milliseconds(5000));
 		currentState = MENU;
 	}
 }
@@ -1550,65 +1618,51 @@ void joiningPrepHandling(InputBox& input, sf::Event event, sf::RenderWindow& win
 	}
 }
 
-void joiningHandling(sf::Event event, InputBox& nick, sf::RenderWindow& window, sf::TcpSocket& socket, sf::IpAddress& serverIp,
+void joiningHandling(sf::Event event, InputBox& nick, sf::RenderWindow& window, NetworkClient& netClient, sf::IpAddress& serverIp,
 	unsigned short serverPort, LobbyPanel& lobbyLeft, LobbyPanel& lobbyRight, sf::Font& font, GameMngr& gameScreen)
 {
-	if (socket.connect(serverIp, serverPort) == sf::Socket::Done && !isConnected)
+	if (netClient.connect(serverIp, serverPort))
 	{
 		std::cout << "Connected to server" << std::endl;
 		isConnected = true;
-		isListening = true;
-		if (!threadStarted)
-		{
-			listeningThread = std::thread([&]()
-				{
-					sf::Packet line;
-					std::cout << "Thread is working!" << '\n';
-					while (isListening)
-					{
-						auto status = socket.receive(line);
-						if (status == sf::Socket::Done)
-						{
-							{
-								std::lock_guard<std::mutex> lock(queueMutex);
-								messageQueue.push(line);
-							}
-						}
-						else if (status == sf::Socket::Disconnected || currentState == MENU)
-						{
-							std::cout << "Disconnected from server." << '\n';
-							isListening.store(false);
-						}
-						else if (status == sf::Socket::NotReady)
-						{
-							std::this_thread::sleep_for(std::chrono::milliseconds(50));
-						}
-						else
-						{
-							std::cerr << "Error while receiving packet." << '\n';
-						}
-					}
-				});
-			listeningThread.detach();
-			threadStarted = true;
-		}
-		std::cout << "Listening to server now\n";
-		std::string name = nick.text.getString();
 
-		if (sendWelcomeMsg(name, socket))
+		netClient.startReceiveLoop();
+		std::cout << "Listening to server now\n";
+
+		std::string name = nick.text.getString();
+		if (!sendWelcomeMsg(name, netClient.socket()))
 		{
-			std::cout << "Name sent to server" << '\n';
-			sf::Packet pack;
-			sf::sleep(sf::milliseconds(20));
-			if (!messageQueue.empty())
-			{
-				pack = messageQueue.back();
-				messageQueue.pop();
-			}
-			processResponse(pack, lobbyLeft, lobbyRight, gameScreen, socket);
-			initializeLobbyPanel(font, lobbyLeft, lobbyRight, window);
-			currentState = LOBBY;
+			std::cerr << "Failed to send name to server\n";
+			netClient.stopReceiveLoop();
+			isConnected = false;
+			currentState = MENU;
+			return;
 		}
+
+		sf::Packet pack;
+		bool gotPack = false;
+		const int maxAttempts = 25; 
+		for (int i = 0; i < maxAttempts; ++i)
+		{
+			if (netClient.popPacket(pack))
+			{
+				gotPack = true;
+				break;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		}
+
+		if (gotPack)
+		{
+			processResponse(pack, lobbyLeft, lobbyRight, gameScreen, netClient.socket());
+		}
+		else
+		{
+			std::cerr << "Warning: no initial packet received from server within timeout\n";
+		}
+
+		initializeLobbyPanel(font, lobbyLeft, lobbyRight, window);
+		currentState = LOBBY;
 	}
 	else
 	{
@@ -1761,6 +1815,17 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 	{
 		gameScreen.leftPanel.teamShape.setOutlineThickness(2.0f);
 		gameScreen.leftPanel.teamShape.setOutlineColor({ 229,255,0 });
+		if (gameScreen.leftPanel.isClickedEndTurn(event, window))
+		{
+			if (sendTurnEnd(gameScreen.leftPanel.mySocket))
+			{
+				std::cout << "End turn sent (left team)\n";
+			}
+			else
+			{
+				std::cerr << "Failed to send end-turn (left)\n";
+			}
+		}
 	}
 	else
 	{
@@ -1771,6 +1836,7 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 	{
 		std::cout << "writing in blue chat...\n";
 		gameScreen.leftPanel.isWriting = true;
+		gameScreen.leftPanel.inputShape.setFillColor(BRG_BLUE);
 	}
 	else if (gameScreen.leftPanel.isClickedInput(event, window))
 	{
@@ -1778,9 +1844,15 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 		std::cout << "team: " << gameScreen.myTeam << "\n team panel active: " << gameScreen.leftPanel.isActive << "\n";
 	}
 
+	if (!gameScreen.leftPanel.isWriting)
+	{
+		gameScreen.leftPanel.inputShape.setFillColor(DEF_BLUE);
+	}
+
 	if (gameScreen.leftPanel.isActive && gameScreen.leftPanel.isWriting)
 	{
 		gameScreen.leftPanel.handleUtf8Input(event);
+
 		if (gameScreen.leftPanel.isClickedHint(event, window))
 		{
 			gameScreen.leftPanel.isWriting = false;
@@ -1795,9 +1867,12 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 				}
 				gameScreen.leftPanel.curMsg.setString("");
 				gameScreen.leftPanel.isWriting = false;
+
 			}
 		}
 	}
+
+	
 
 	if (gameScreen.leftPanel.isHoveringChat(window))
 	{
@@ -1847,12 +1922,33 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 		gameScreen.leftPanel.hintButton.setOutlineThickness(0.f);
 	}
 
+	if (gameScreen.leftPanel.isHoveringEndTurn(window))
+	{
+		gameScreen.leftPanel.endTurnButton.setOutlineThickness(2.f);
+		gameScreen.leftPanel.endTurnButton.setOutlineColor(BLACKCOL);
+	}
+	else
+	{
+		gameScreen.leftPanel.endTurnButton.setOutlineThickness(0.f);
+	}
+
 	//right (1) team processing
 
 	if (gameScreen.rightPanel.isActive)
 	{
 		gameScreen.rightPanel.teamShape.setOutlineThickness(2.0f);
 		gameScreen.rightPanel.teamShape.setOutlineColor({ 229,255,0 });
+		if (gameScreen.rightPanel.isClickedEndTurn(event, window))
+		{
+			if (sendTurnEnd(gameScreen.rightPanel.mySocket))
+			{
+				std::cout << "End turn sent (right team)\n";
+			}
+			else
+			{
+				std::cerr << "Failed to send end-turn (right)\n";
+			}
+		}
 	}
 	else
 	{
@@ -1863,11 +1959,18 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 	{
 		std::cout << "writing in red chat...\n";
 		gameScreen.rightPanel.isWriting = true;
+		gameScreen.rightPanel.inputShape.setFillColor(BRG_RED);
+
 	}
 	else if (gameScreen.rightPanel.isClickedInput(event, window))
 	{
 
 		std::cout << "team: " << gameScreen.myTeam << "\n team panel active: " << gameScreen.rightPanel.isActive << "\n";
+	}
+
+	if (!gameScreen.rightPanel.isWriting)
+	{
+		gameScreen.rightPanel.inputShape.setFillColor(DEF_RED);
 	}
 
 	if (gameScreen.rightPanel.isActive && gameScreen.rightPanel.isWriting)
@@ -1939,6 +2042,15 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 		gameScreen.rightPanel.hintButton.setOutlineThickness(0.f);
 	}
 
+	if (gameScreen.rightPanel.isHoveringEndTurn(window))
+	{
+		gameScreen.rightPanel.endTurnButton.setOutlineThickness(2.f);
+		gameScreen.rightPanel.endTurnButton.setOutlineColor(BLACKCOL);
+	}
+	else
+	{
+		gameScreen.rightPanel.endTurnButton.setOutlineThickness(0.f);
+	}
 }
 
 void settingsHandling(InputBox& inpBox, sf::Event event, sf::RenderWindow& window)
@@ -1974,14 +2086,15 @@ void settingsHandling(InputBox& inpBox, sf::Event event, sf::RenderWindow& windo
 	}
 }
 
-void handleServerMessages(sf::TcpSocket& socket, LobbyPanel& lobbyLeft, LobbyPanel& lobbyRight, GameMngr& gameScreen)
+void handleServerMessages(NetworkClient& netClient, LobbyPanel& lobbyLeft, LobbyPanel& lobbyRight, GameMngr& gameScreen)
 {
-	std::lock_guard<std::mutex> lock(queueMutex);
-	while (!messageQueue.empty())
+	sf::Packet packet;
+	// Pop and process up to N packets per frame to avoid hitching (e.g. 100)
+	int processed = 0;
+	while (processed < 100 && netClient.popPacket(packet))
 	{
-		sf::Packet packet = std::move(messageQueue.front());
-		messageQueue.pop();
-		processResponse(packet, lobbyLeft, lobbyRight, gameScreen, socket);
+		processResponse(packet, lobbyLeft, lobbyRight, gameScreen, netClient.socket());
+		++processed;
 	}
 }
 
@@ -2004,9 +2117,10 @@ int main()
 
 	//networking staff:
 
-	sf::TcpSocket socket;
+	NetworkClient netClient;
+	sf::TcpSocket& socket = netClient.socket();
 
-	sf::IpAddress serverIp = "127.0.0.1";
+	sf::IpAddress serverIp = sf::IpAddress::getLocalAddress();
 	unsigned short serverPort = 54000;
 
 	//menu buttons:
@@ -2057,7 +2171,7 @@ int main()
 	//play page:
 
 	blueTeam.setUpPanel({ 5.f,5.f }, { .0f,.0f }, { 200.f,530.f }, DEF_BLUE);
-
+	blueTeam.setUpEndTurnButton(font);
 	blueTeam.seUpChat({ .0f,.0f }, { 190.f, 85.f }, DEEP_BLUE);
 	blueTeam.setUpHintButton(DEF_BLUE);
 	blueTeam.setUpInputBox(DEF_BLUE);
@@ -2072,23 +2186,27 @@ int main()
 	redTeam.teamShape.setFillColor(DEF_RED);
 	redTeam.teamShape.setPosition(window.getSize().x - 5.f - redTeam.teamShape.getSize().x, 5.f);
 
+	redTeam.setUpEndTurnButton(font);
 	redTeam.seUpChat({ .0f,.0f }, { 190.f, 85.f }, DEEP_RED);
 	redTeam.setUpHintButton(DEF_RED);
 	redTeam.setUpInputBox(DEF_RED);
 
-
+	sf::Packet packet;
+	
 	while (window.isOpen())
 	{
+
+		while (netClient.popPacket(packet))
+		{
+			processResponse(packet, lobbyPanelLeft, lobbyPanelRight, game, netClient.socket());
+		}
 		sf::Event event;
+
 		while (window.pollEvent(event))
 		{
 			if (event.type == sf::Event::Closed)
 			{
-				isListening.store(false);
-				if (listeningThread.joinable())
-				{
-					listeningThread.join();
-				}
+				netClient.stopReceiveLoop();
 				window.close();
 			}
 
@@ -2101,7 +2219,7 @@ int main()
 
 			if (currentState.load() == HOSTING)
 			{
-				hostingHandling(event, inpBox, window, socket, serverIp, serverPort, lobbyPanelLeft, lobbyPanelRight, font);
+				hostingHandling(event, inpBox, window, netClient, serverIp, serverPort, lobbyPanelLeft, lobbyPanelRight, font);
 			}
 
 			if (currentState.load() == JOININGPREP)
@@ -2110,7 +2228,7 @@ int main()
 			}
 			if (currentState.load() == JOINING)
 			{
-				joiningHandling(event, inpBox, window, socket, serverIp, serverPort, lobbyPanelLeft, lobbyPanelRight, font, game);
+				joiningHandling(event, inpBox, window, netClient, serverIp, serverPort, lobbyPanelLeft, lobbyPanelRight, font, game);
 			}
 
 			if (currentState.load() == LOBBYPREP)
@@ -2136,7 +2254,7 @@ int main()
 
 		}
 
-		handleServerMessages(socket, lobbyPanelLeft, lobbyPanelRight, game);
+		handleServerMessages(netClient, lobbyPanelLeft, lobbyPanelRight, game);
 
 		currentState.load() == PLAYING ? window.clear(DARK_GRAY) : window.clear(PALE_LEMON);
 
@@ -2183,11 +2301,7 @@ int main()
 		window.display();
 	}
 
-	isListening = false;
-	if (listeningThread.joinable())
-	{
-		listeningThread.join();
-	}
+	netClient.stopReceiveLoop();
 
 	socket.disconnect();
 	return 0;

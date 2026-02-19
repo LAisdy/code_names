@@ -1,5 +1,5 @@
 # Клиентский проект
-add_executable(CodeNamesClient CodeNamesCli.cpp)
+add_executable(CodeNamesClient CodeNamesCli.cpp NetworkClient.cpp)
 
 # Линковка с SFML (требуется Graphics, Window, System)
 

@@ -1,0 +1,101 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"childIndexes" : 
+					[
+						1,
+						2
+					],
+					"jsonFile" : "directory-.-Debug-d0094a50bb2071803777.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.15"
+					},
+					"projectIndex" : 0,
+					"source" : "."
+				},
+				{
+					"build" : "server",
+					"jsonFile" : "directory-server-Debug-ca16530337ce509e32d1.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.15"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 0,
+					"source" : "server",
+					"targetIndexes" : 
+					[
+						1
+					]
+				},
+				{
+					"build" : "client",
+					"jsonFile" : "directory-client-Debug-3c37cf1077c78f229df7.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.15"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 0,
+					"source" : "client",
+					"targetIndexes" : 
+					[
+						0
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0,
+						1,
+						2
+					],
+					"name" : "CodeNames",
+					"targetIndexes" : 
+					[
+						0,
+						1
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 2,
+					"id" : "CodeNamesClient::@b0c487aac068df482bf0",
+					"jsonFile" : "target-CodeNamesClient-Debug-ef0b5696eff3615cc1c4.json",
+					"name" : "CodeNamesClient",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 1,
+					"id" : "CodeNamesServer::@d19778d2e34a1e3ddfc0",
+					"jsonFile" : "target-CodeNamesServer-Debug-aab77e183ddce3f5bfc6.json",
+					"name" : "CodeNamesServer",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "D:/tests/code_names/out/build/x64-Debug",
+		"source" : "D:/tests/code_names"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 8
+	}
+}
