@@ -16,7 +16,8 @@
 #include <codecvt>
 #include <locale>
 #include "NetworkClient.hpp"
-
+#include <fstream>
+#include <filesystem>
 //u8 converter:
 std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
 
@@ -74,11 +75,39 @@ sf::Vector2f  TEAM_PANEL_DIMS = { 200.f,530.f };
 sf::Vector2f CHAT_PANEL_DIMS = { 190.f, 85.f };
 
 std::string nickName;
+std::string savedNickname = "Player";
+std::string savedLastIP = "";
 
 std::atomic<bool> isConnected = false;
 std::atomic<state> currentState = MENU;
 
 std::unordered_map<std::string, int> players;
+
+void saveConfig()
+{
+	std::ofstream file("config.cfg");
+	if (file.is_open())
+	{
+		file << savedNickname << std::endl;
+		file << savedLastIP << std::endl;
+		file.close();
+	}
+}
+
+void loadConfig()
+{
+	std::ifstream file("config.cfg");
+	if (file.is_open())
+	{
+		std::getline(file, savedNickname);
+		std::getline(file, savedLastIP);
+		file.close();
+	}
+	else
+	{
+		saveConfig();
+	}
+}
 
 void centerText(sf::Text& text, sf::RectangleShape& rect)
 {
@@ -503,25 +532,33 @@ struct WordCard
 		wordCard.setFillColor(color);
 	}
 
-	void revealWord(int col)
+	void revealWord(int col, std::string&  myRole)
 	{
 		isRevealed = true;
-		if (col == 3)
+		if(myRole=="player")
 		{
-			updateCardColor(BLACKCOL);
-			word.setFillColor(WHITECOL);
+			if (col == 3)
+			{
+				updateCardColor(BLACKCOL);
+				word.setFillColor(WHITECOL);
+			}
+			else if (col == 2)
+			{
+				updateCardColor(DEF_RED);
+			}
+			else if (col == 1)
+			{
+				updateCardColor(DEF_BLUE);
+			}
+			else if (col == 0)
+			{
+				updateCardColor(WHITECOL);
+			}
 		}
-		else if (col == 2)
+		else
 		{
-			updateCardColor(DEF_RED);
-		}
-		else if (col == 1)
-		{
-			updateCardColor(DEF_BLUE);
-		}
-		else if (col == 0)
-		{
-			updateCardColor(WHITECOL);
+			updateCardColor(SANDSTONE);
+			word.setFillColor(WALNUT);
 		}
 	}
 };
@@ -748,6 +785,8 @@ struct TeamPanel
 	sf::TcpSocket& mySocket;
 	PlayerSlot masterSlot;
 	std::vector<PlayerSlot> playerSlots;
+	int teamSize = 0;
+	int team = 0;
 	Timer timer;
 	sf::RectangleShape teamShape;
 	sf::RectangleShape chatShape;
@@ -768,8 +807,8 @@ struct TeamPanel
 	bool isWriting = false;
 	std::vector<sf::Text> chatMsgs{};
 
-	TeamPanel(sf::TcpSocket& socket, PlayerSlot& master, std::vector<PlayerSlot>& players, float timeSet = 0)
-		:mySocket(socket), masterSlot(master), playerSlots(players), timer(timeSet)
+	TeamPanel(sf::TcpSocket& socket, PlayerSlot& master, std::vector<PlayerSlot>& players, float timeSet = 0, int teamId=0)
+		:mySocket(socket), masterSlot(master), playerSlots(players), timer(timeSet),team(teamId)
 	{
 		curMsg.setFont(font);
 		curMsg.setFillColor(WALNUT);
@@ -793,7 +832,7 @@ struct TeamPanel
 		curMsg.setFillColor(WALNUT);
 		timer.setSize(chatShape.getSize().x, 10.f); 
 		float tx = chatShape.getPosition().x;
-		float ty = chatShape.getPosition().y - timer.timerShape.getSize().y - 10.f; 
+		float ty = chatShape.getPosition().y - timer.timerShape.getSize().y - 15.f; 
 		timer.setPosition({ tx, ty });
 		timer.isStopped = true;
 	}
@@ -855,6 +894,54 @@ struct TeamPanel
 		sf::Packet hint;
 		hint << "hint" << hintWord << hintCount;
 		return hint;
+	}
+
+	void setTeamSize(int size)
+	{
+		teamSize = size;
+		sf::Color masterColor = (team == 0) ? DEEP_BLUE : DEEP_RED;
+		sf::Color playerColor = (team == 0) ? DEF_BLUE : DEF_RED;
+
+		masterSlot = PlayerSlot(masterColor, { 180.f, 40.f }, WHITECOL, { 0.f,0.f }, font);
+		playerSlots.clear();
+		for (int i = 0; i < size - 1; ++i)
+		{
+			PlayerSlot slot(playerColor, { 180.f, 30.f }, WHITECOL, { 0.f,0.f }, font);
+			playerSlots.push_back(slot);
+		}
+		arrangeSlots();
+	}
+
+	void arrangeSlots()
+	{
+		float startX = teamShape.getPosition().x + 10.f;
+		float startY = teamShape.getPosition().y + 50.f;
+		float spacing = 35.f;
+		masterSlot.shape.setPosition(startX, startY);
+		masterSlot.updateTextPos();
+
+		for (size_t i = 0; i < playerSlots.size(); ++i)
+		{
+			playerSlots[i].shape.setPosition(startX, startY + (i + 1) * spacing);
+			playerSlots[i].updateTextPos();
+		}
+	}
+
+	void setMasterName(const std::string& name)
+	{
+		masterSlot.playerName = name;
+		masterSlot.isOccupied = !name.empty();
+		masterSlot.text.setString(name);
+		masterSlot.updateTextPos();
+	}
+
+	void setPlayerName(int index, const std::string& name)
+	{
+		if (index < 0 || index >= (int)playerSlots.size()) return;
+		playerSlots[index].playerName = name;
+		playerSlots[index].isOccupied = !name.empty();
+		playerSlots[index].text.setString(name);
+		playerSlots[index].updateTextPos();
 	}
 
 	bool isHoveringChat(sf::RenderWindow& window)
@@ -993,6 +1080,9 @@ struct TeamPanel
 		window.draw(endTurnButton);
 		window.draw(endTurnText);
 		timer.draw(window);
+		masterSlot.draw(window);
+		for (auto& slot : playerSlots)
+			slot.draw(window);
 	}
 };
 
@@ -1071,6 +1161,7 @@ struct GameMngr
 	int curTurn = 0b00;
 	int curTeam = 0;
 	int myTeam = 0;
+	std::string myRole;
 	bool isReady = false;
 
 	void setTurnFromServer(int teamIndex, bool masterTurn)
@@ -1221,6 +1312,19 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 				players[nick] = t;
 			}
 			targetSlot.updateTextPos();
+
+			if (t == 0) {
+				if (s == 0)
+					gameScreen.leftPanel.setMasterName(nick);
+				else
+					gameScreen.leftPanel.setPlayerName(s - 1, nick);
+			}
+			else {
+				if (s == 0)
+					gameScreen.rightPanel.setMasterName(nick);
+				else
+					gameScreen.rightPanel.setPlayerName(s - 1, nick);
+			}
 		}
 
 	}
@@ -1231,6 +1335,8 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 
 		left.teamSize = size;
 		right.teamSize = size;
+		gameScreen.leftPanel.setTeamSize(size);
+		gameScreen.rightPanel.setTeamSize(size);
 	}
 	else if (command == "board")
 	{
@@ -1334,7 +1440,7 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 		int col = 0;
 		packet >> order >> col;
 		std::pair<int, int> inds = getWordOrder(order);
-		gameScreen.boardPanel.board[inds.first][inds.second].revealWord(col);
+		gameScreen.boardPanel.board[inds.first][inds.second].revealWord(col, gameScreen.myRole);
 		std::cout << "\nRevealed word no.: [" << inds.first << ' ' << inds.second << "] with color: " << col << '\n';
 	}
 	else if (command == "flag")
@@ -1610,6 +1716,8 @@ void joiningPrepHandling(InputBox& input, sf::Event event, sf::RenderWindow& win
 	if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Enter)
 	{
 		std::string ipInp = input.text.getString();
+		savedLastIP = ipInp;
+		saveConfig();
 		if (!ipInp.empty())
 		{
 			adress = ipInp;
@@ -1679,6 +1787,7 @@ void lobbyHandling(LobbyPanel& lobbyLeft, LobbyPanel& lobbyRight, GameMngr& game
 		if (sendChosenSlot(0, 0, socket))
 		{
 			gameScreen.myTeam = 0;
+			gameScreen.myRole = "master";
 			std::cout << "u r left team master now" << '\n';
 		}
 	}
@@ -1689,6 +1798,7 @@ void lobbyHandling(LobbyPanel& lobbyLeft, LobbyPanel& lobbyRight, GameMngr& game
 		if (sendChosenSlot(1, 0, socket))
 		{
 			gameScreen.myTeam = 1;
+			gameScreen.myRole = "master";
 			std::cout << "u r right team master now" << '\n';
 		}
 	}
@@ -1700,6 +1810,8 @@ void lobbyHandling(LobbyPanel& lobbyLeft, LobbyPanel& lobbyRight, GameMngr& game
 			if (sendChosenSlot(0, i + 1, socket))
 			{
 				gameScreen.myTeam = 0;
+				gameScreen.myRole = "player";
+
 				std::cout << "slot " << i + 1 << " of left was chosen.\n" << "Waiting server to confirm...\n";
 			}
 		}
@@ -1710,6 +1822,8 @@ void lobbyHandling(LobbyPanel& lobbyLeft, LobbyPanel& lobbyRight, GameMngr& game
 			if (sendChosenSlot(1, i + 1, socket))
 			{
 				gameScreen.myTeam = 1;
+				gameScreen.myRole = "player";
+
 				std::cout << "slot " << i + 1 << " of right was chosen.\n" << "Waiting server to confirm...\n";
 			}
 		}
@@ -2082,6 +2196,8 @@ void settingsHandling(InputBox& inpBox, sf::Event event, sf::RenderWindow& windo
 		{
 			inpBox.updateBoxColor(inpBox.inputBoxColor);
 			inpBox.isWriting = false;
+			savedNickname = inpBox.text.getString();
+			saveConfig();
 		}
 	}
 }
@@ -2115,6 +2231,8 @@ int main()
 	}
 	font.setSmooth(false);
 
+	loadConfig();
+
 	//networking staff:
 
 	NetworkClient netClient;
@@ -2141,14 +2259,14 @@ int main()
 
 	InputBox inpBox;
 	inpBox.labelText = sf::Text("NAME", font, 24);
-	inpBox.text = sf::Text("Player", font, 24);
+	inpBox.text.setString(savedNickname);
 	inpBox.setInpBoxParams(100, 200, 200, 400, 80, font);
 
 	//joiningPrep page:
 
 	InputBox joiningPrepInp;
 	joiningPrepInp.labelText = sf::Text("IP : ", font, 24);
-	joiningPrepInp.text = sf::Text("", font, 24);
+	joiningPrepInp.text.setString(savedLastIP);
 	joiningPrepInp.setInpBoxParams(100, 200, 200, 400, 80, font);
 
 	//lobbyPrep page:
@@ -2163,8 +2281,8 @@ int main()
 	LobbyPanel lobbyPanelRight;
 
 	BoardPanel boardPanel(boardOfWords);
-	TeamPanel blueTeam{ socket, lobbyPanelLeft.masterSlot, lobbyPanelLeft.playerSlots };
-	TeamPanel redTeam{ socket, lobbyPanelRight.masterSlot, lobbyPanelRight.playerSlots };
+	TeamPanel blueTeam{ socket, lobbyPanelLeft.masterSlot, lobbyPanelLeft.playerSlots,0,0 };
+	TeamPanel redTeam{ socket, lobbyPanelRight.masterSlot, lobbyPanelRight.playerSlots,0,1 };
 	EndGamePanel finishScreen(font);
 	GameMngr game{ boardPanel, blueTeam, redTeam, finishScreen };
 
@@ -2175,6 +2293,7 @@ int main()
 	blueTeam.seUpChat({ .0f,.0f }, { 190.f, 85.f }, DEEP_BLUE);
 	blueTeam.setUpHintButton(DEF_BLUE);
 	blueTeam.setUpInputBox(DEF_BLUE);
+	blueTeam.setTeamSize(2);
 
 	boardPanel.boardShape.setOrigin(.0f, .0f);
 	boardPanel.boardShape.setSize({ 440,440 });
@@ -2190,6 +2309,7 @@ int main()
 	redTeam.seUpChat({ .0f,.0f }, { 190.f, 85.f }, DEEP_RED);
 	redTeam.setUpHintButton(DEF_RED);
 	redTeam.setUpInputBox(DEF_RED);
+	redTeam.setTeamSize(2);
 
 	sf::Packet packet;
 	
