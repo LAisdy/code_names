@@ -796,7 +796,6 @@ struct TeamPanel
 
 	sf::RectangleShape hintButton;
 	sf::RectangleShape inputShape;
-	std::vector<sf::Text> chatMessages{};
 
 	std::string hintWord;
 	sf::Text curMsg{};
@@ -811,7 +810,7 @@ struct TeamPanel
 		:mySocket(socket), masterSlot(master), playerSlots(players), timer(timeSet),team(teamId)
 	{
 		curMsg.setFont(font);
-		curMsg.setFillColor(WALNUT);
+		curMsg.setFillColor(WHITECOL);
 	}
 
 	void setUpPanel(sf::Vector2f pos, sf::Vector2f orig, sf::Vector2f dims, sf::Color& col)
@@ -829,7 +828,7 @@ struct TeamPanel
 		chatShape.setPosition(teamShape.getPosition().x + 5.f, teamShape.getPosition().y + teamShape.getSize().y - chatShape.getSize().y - 5.f);
 		chatShape.setFillColor(col);
 		curMsg.setFont(font);
-		curMsg.setFillColor(WALNUT);
+		curMsg.setFillColor(WHITECOL);
 		timer.setSize(chatShape.getSize().x, 10.f); 
 		float tx = chatShape.getPosition().x;
 		float ty = chatShape.getPosition().y - timer.timerShape.getSize().y - 15.f; 
@@ -1050,7 +1049,7 @@ struct TeamPanel
 	{
 		sf::Text sfMsg;
 		sfMsg.setFont(font);
-		sfMsg.setFillColor(WALNUT);
+		sfMsg.setFillColor(WHITECOL);
 		sfMsg.setString(msg);
 		chatMsgs.push_back(sfMsg);
 	}
@@ -1066,7 +1065,7 @@ struct TeamPanel
 			for (size_t i = 0; i < std::min(chatMsgs.size() - hintInd, size_t(3)); ++i)
 			{
 				chatMsgs[i + hintInd].setCharacterSize(16);
-				chatMsgs[i + hintInd].setFillColor(WALNUT);
+				chatMsgs[i + hintInd].setFillColor(WHITECOL);
 				chatMsgs[i + hintInd].setFont(font);
 				chatMsgs[i + hintInd].setPosition({ chatShape.getPosition().x + 5, chatShape.getPosition().y + 3 + 18 * i });
 				window.draw(chatMsgs[i + hintInd]);
@@ -1090,6 +1089,8 @@ struct EndGamePanel
 {
 	sf::RectangleShape backShape;
 	sf::RectangleShape panelShape;
+	sf::RectangleShape restartButton;
+	sf::Text restartText;
 	sf::Text endText;
 
 	sf::Color backColor = { 0,0,0,128 };
@@ -1109,6 +1110,26 @@ struct EndGamePanel
 		panelShape.setSize({ 600, 450 });
 		panelShape.setFillColor(panelColor);
 		panelShape.setPosition(130, 45);
+		restartButton.setSize({ 200.f, 50.f });
+		restartButton.setFillColor(SANDSTONE);
+		restartButton.setPosition(panelShape.getPosition().x + panelShape.getSize().x / 2 - 100,
+			panelShape.getPosition().y + panelShape.getSize().y - 80);
+		restartText.setFont(font);
+		restartText.setString("Back to Lobby");
+		restartText.setCharacterSize(24);
+		restartText.setFillColor(DARK_UMBER);
+		centerText(restartText, restartButton);
+	}
+
+	bool isRestartHovered(sf::RenderWindow& window)
+	{
+		sf::Vector2f mousePos = getMouseWorldPos(window);
+		return restartButton.getGlobalBounds().contains(mousePos);
+	}
+
+	bool isRestartClicked(sf::Event& event, sf::RenderWindow& window)
+	{
+		return (isRestartHovered(window) && event.type == sf::Event::MouseButtonPressed);
 	}
 
 	void callGameEnd(int wonTeam, int myTeam)
@@ -1143,6 +1164,8 @@ struct EndGamePanel
 			window.draw(backShape);
 			window.draw(panelShape);
 			window.draw(endText);
+			window.draw(restartButton);
+			window.draw(restartText);
 		}
 	}
 
@@ -1161,6 +1184,7 @@ struct GameMngr
 	int curTurn = 0b00;
 	int curTeam = 0;
 	int myTeam = 0;
+	std::string curRole = "";
 	std::string myRole;
 	bool isReady = false;
 
@@ -1217,6 +1241,7 @@ struct GameMngr
 		rightPanel.draw(window);
 		endPanel.draw(window);
 	}
+	
 };
 
 //words vec for game session:
@@ -1373,6 +1398,10 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 	{
 		std::cout << "\nstarting\n";
 		currentState = PLAYING;
+		gameScreen.leftPanel.chatMsgs.clear();
+		gameScreen.rightPanel.chatMsgs.clear();
+		gameScreen.curTeam = 0;
+		gameScreen.curRole = "master";
 		gameScreen.leftPanel.isActive = true;
 	}
 	else if (command == "set_timer")
@@ -1384,6 +1413,7 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 		panel.timer.timeSet = val;
 		panel.timer.timeLeft = val;
 		panel.timer.timerShape.setSize({ 190.f, 10.f });
+		panel.timer.update(val);
 		panel.isActive = true; // Assume sets active
 		TeamPanel& otherPanel = (team == 0) ? gameScreen.rightPanel : gameScreen.leftPanel;
 		otherPanel.isActive = false;
@@ -1394,7 +1424,9 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 		float leftTime = 0.f;
 		packet >> leftTime;
 		if (gameScreen.curTurn & 0b10)
+		{
 			gameScreen.rightPanel.timer.update(leftTime);
+		}
 		else
 			gameScreen.leftPanel.timer.update(leftTime);
 	}
@@ -1417,7 +1449,12 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 }
 	else if (command == "next")
 	{
-		gameScreen.nextTurn();
+		int team;
+		std::string role;
+		packet >> team >> role;
+		gameScreen.curRole = role;
+		bool masterTurn = (role == "master");
+		gameScreen.setTurnFromServer(team, masterTurn);
 	}
 	else if (command == "next_timer")
 	{
@@ -1430,9 +1467,15 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 		float leftTime = 0.f;
 		packet >> leftTime;
 		if (gameScreen.curTurn & 0b10)
+		{
+			gameScreen.rightPanel.timer.timeSet = val;
 			gameScreen.rightPanel.timer.update(leftTime);
+		}
 		else
+		{
+			gameScreen.leftPanel.timer.timeSet = val;
 			gameScreen.leftPanel.timer.update(leftTime);
+		}	
 	}
 	else if (command == "reveal")
 	{
@@ -1468,7 +1511,6 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 			{
 				gameScreen.leftPanel.hintInd++;
 			}
-			//std::cout << "\nadded msg: " << res << " to blue chatMessages\n";
 
 		}
 		else if (team == 1)
@@ -1478,7 +1520,6 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 			{
 				gameScreen.rightPanel.hintInd++;
 			}
-			//std::cout << "\nadded msg: " << res << " to red chatMessages\n";
 		}
 	}
 	else if (command == "winner")
@@ -1500,7 +1541,29 @@ void processResponse(sf::Packet& packet, LobbyPanel& left, LobbyPanel& right, Ga
 		}
 		gameScreen.endPanel.setText(finishMsg);
 	}
+	else if (command == "return_to_lobby")
+	{
+		std::cout << "Returning to lobby...\n";
+		currentState = LOBBY;
+		gameScreen.endPanel.isActive = false;
+		gameScreen.myTeam = -1;
+		gameScreen.myRole = "";
+		gameScreen.curTeam = 0;
+		gameScreen.curTurn = 0;
 
+		for (auto& row : gameScreen.boardPanel.board)
+		{
+			for (auto& card : row)
+			{
+				card = WordCard(); 
+			}
+		}
+		gameScreen.leftPanel.timer.isStopped = true;
+		gameScreen.rightPanel.timer.isStopped = true;
+		gameScreen.leftPanel.isActive = false;
+		gameScreen.rightPanel.isActive = false;
+
+	}
 }
 
 sf::RectangleShape makeNewButtonElement(sf::Vector2f& dims, sf::Color& fillCol, sf::Vector2u& winSize, int order)
@@ -1847,14 +1910,6 @@ void lobbyHandling(LobbyPanel& lobbyLeft, LobbyPanel& lobbyRight, GameMngr& game
 		}
 	}
 
-	if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::L)
-	{
-		if (sendPreStartGame(socket))
-		{
-			currentState = PLAYING;
-		}
-	}
-
 }
 
 void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event event, GameMngr& gameScreen)
@@ -1927,8 +1982,37 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 	//left (0) team proccessing:
 	if (gameScreen.leftPanel.isActive)
 	{
+		if (gameScreen.curRole == "master")
+		{
+			gameScreen.leftPanel.masterSlot.text.setFillColor({ 229,255,0 });
+			for (size_t i = 0; i < gameScreen.leftPanel.playerSlots.size(); ++i)
+			{
+				gameScreen.leftPanel.playerSlots[i].text.setFillColor(WHITECOL);
+			}
+		}
+		else if (gameScreen.curRole == "player")
+		{
+			for (size_t i = 0; i < gameScreen.leftPanel.playerSlots.size(); ++i)
+			{
+				gameScreen.leftPanel.playerSlots[i].text.setFillColor({ 229,255,0 });
+			}
+			gameScreen.leftPanel.masterSlot.text.setFillColor(WHITECOL);
+		}
+		
+		if (gameScreen.leftPanel.isHoveringEndTurn(window))
+		{
+			gameScreen.leftPanel.endTurnButton.setOutlineThickness(2.0f);
+			gameScreen.leftPanel.teamShape.setOutlineColor({ 229,255,0 });
+
+		}
+		else
+		{
+			gameScreen.leftPanel.endTurnButton.setOutlineThickness(0.f);
+		}
+
 		gameScreen.leftPanel.teamShape.setOutlineThickness(2.0f);
 		gameScreen.leftPanel.teamShape.setOutlineColor({ 229,255,0 });
+
 		if (gameScreen.leftPanel.isClickedEndTurn(event, window))
 		{
 			if (sendTurnEnd(gameScreen.leftPanel.mySocket))
@@ -1940,22 +2024,35 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 				std::cerr << "Failed to send end-turn (left)\n";
 			}
 		}
+
+		if (gameScreen.myTeam == 0 && gameScreen.leftPanel.isClickedInput(event, window))
+		{
+			std::cout << "writing in blue chat...\n";
+			gameScreen.leftPanel.isWriting = true;
+		}
 	}
 	else
 	{
 		gameScreen.leftPanel.teamShape.setOutlineThickness(0.0f);
+		gameScreen.leftPanel.masterSlot.text.setFillColor(WHITECOL);
+		for (size_t i = 0; i < gameScreen.leftPanel.playerSlots.size(); ++i)
+		{
+			gameScreen.leftPanel.playerSlots[i].text.setFillColor(WHITECOL);
+		}
 	}
 
-	if (gameScreen.myTeam == 0 && gameScreen.leftPanel.isClickedInput(event, window) && gameScreen.leftPanel.isActive)
+	if	(gameScreen.leftPanel.isWriting)
 	{
-		std::cout << "writing in blue chat...\n";
-		gameScreen.leftPanel.isWriting = true;
 		gameScreen.leftPanel.inputShape.setFillColor(BRG_BLUE);
-	}
-	else if (gameScreen.leftPanel.isClickedInput(event, window))
-	{
-
-		std::cout << "team: " << gameScreen.myTeam << "\n team panel active: " << gameScreen.leftPanel.isActive << "\n";
+		if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left)
+		{
+			if (!gameScreen.leftPanel.isHoveringInput(window) && !gameScreen.leftPanel.isHoveringHint(window)) {
+				gameScreen.leftPanel.isWriting = false;
+			}
+		}
+		else if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape) {
+			gameScreen.leftPanel.isWriting = false;
+		}
 	}
 
 	if (!gameScreen.leftPanel.isWriting)
@@ -2049,9 +2146,39 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 	//right (1) team processing
 
 	if (gameScreen.rightPanel.isActive)
-	{
+	{ 
+		if (gameScreen.curRole == "master")
+		{
+			gameScreen.rightPanel.masterSlot.text.setFillColor({ 229,255,0 });
+			for (size_t i = 0; i < gameScreen.rightPanel.playerSlots.size(); ++i)
+			{
+				gameScreen.rightPanel.playerSlots[i].text.setFillColor(WHITECOL);
+			}
+		}
+		else if (gameScreen.curRole == "player")
+		{
+			for (size_t i = 0; i < gameScreen.rightPanel.playerSlots.size(); ++i)
+			{
+				gameScreen.rightPanel.playerSlots[i].text.setFillColor({ 229,255,0 });
+			}
+			gameScreen.rightPanel.masterSlot.text.setFillColor(WHITECOL);
+		}
+		
+
+		if (gameScreen.rightPanel.isHoveringEndTurn(window))
+		{			   
+			gameScreen.rightPanel.endTurnButton.setOutlineThickness(2.0f);
+			gameScreen.rightPanel.teamShape.setOutlineColor({ 229,255,0 });
+
+		}
+		else
+		{
+			gameScreen.rightPanel.endTurnButton.setOutlineThickness(0.f);
+		}
+
 		gameScreen.rightPanel.teamShape.setOutlineThickness(2.0f);
 		gameScreen.rightPanel.teamShape.setOutlineColor({ 229,255,0 });
+
 		if (gameScreen.rightPanel.isClickedEndTurn(event, window))
 		{
 			if (sendTurnEnd(gameScreen.rightPanel.mySocket))
@@ -2063,29 +2190,45 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 				std::cerr << "Failed to send end-turn (right)\n";
 			}
 		}
+
+		if (gameScreen.myTeam == 1 && gameScreen.rightPanel.isClickedInput(event, window))
+		{
+			std::cout << "writing in red chat...\n";
+			gameScreen.rightPanel.isWriting = true;
+		}
 	}
 	else
 	{
 		gameScreen.rightPanel.teamShape.setOutlineThickness(0.0f);
+		gameScreen.rightPanel.masterSlot.text.setFillColor(WHITECOL);
+		for (size_t i = 0; i < gameScreen.rightPanel.playerSlots.size(); ++i)
+		{
+			gameScreen.rightPanel.playerSlots[i].text.setFillColor(WHITECOL);
+		}
 	}
 
-	if (gameScreen.myTeam == 1 && gameScreen.rightPanel.isClickedInput(event, window) && gameScreen.rightPanel.isActive)
+	if (gameScreen.rightPanel.isWriting)
 	{
-		std::cout << "writing in red chat...\n";
-		gameScreen.rightPanel.isWriting = true;
 		gameScreen.rightPanel.inputShape.setFillColor(BRG_RED);
 
-	}
-	else if (gameScreen.rightPanel.isClickedInput(event, window))
-	{
-
-		std::cout << "team: " << gameScreen.myTeam << "\n team panel active: " << gameScreen.rightPanel.isActive << "\n";
+		if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) 
+		{
+			if (!gameScreen.rightPanel.isHoveringInput(window) && !gameScreen.rightPanel.isHoveringHint(window)) {
+				gameScreen.rightPanel.isWriting = false;
+			}
+		}
+		else if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape) {
+			gameScreen.rightPanel.isWriting = false;
+		}
 	}
 
 	if (!gameScreen.rightPanel.isWriting)
 	{
 		gameScreen.rightPanel.inputShape.setFillColor(DEF_RED);
 	}
+
+	
+
 
 	if (gameScreen.rightPanel.isActive && gameScreen.rightPanel.isWriting)
 	{
@@ -2165,6 +2308,29 @@ void playingHandling(sf::TcpSocket& socket, sf::RenderWindow& window, sf::Event 
 	{
 		gameScreen.rightPanel.endTurnButton.setOutlineThickness(0.f);
 	}
+
+	if (gameScreen.endPanel.isActive )
+	{
+		if(gameScreen.endPanel.isRestartHovered(window))
+		{
+			gameScreen.endPanel.restartButton.setOutlineThickness(2.f);
+			gameScreen.endPanel.restartButton.setOutlineColor(BLACKCOL);
+			if (gameScreen.endPanel.isRestartClicked(event, window))
+			{
+				sf::Packet p;
+				p << "restart";
+				socket.send(p);
+			}
+		}
+		else
+		{
+			gameScreen.rightPanel.endTurnButton.setOutlineThickness(0.f);
+		}
+	}
+	
+
+	
+
 }
 
 void settingsHandling(InputBox& inpBox, sf::Event event, sf::RenderWindow& window)

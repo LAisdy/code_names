@@ -12,10 +12,11 @@
 #include <SFML/Network.hpp>
 #include <deque>
 
+
 // Constants
 const int FIRST_TURN_TIME = 180;
 const int REGULAR_TURN_TIME = 90;
-const int MAX_WORDS = 399;
+const int MAX_WORDS = 396;
 const std::filesystem::path WORDS_PATH = "./words.txt";
 const sf::Time TIMEOUT = sf::seconds(300);
 const sf::Time BROADCAST_INTERVAL = sf::seconds(1.0f);
@@ -33,6 +34,7 @@ const std::string CMD_FLAG = "flag";
 const std::string CMD_CHAT = "chat";
 const std::string CMD_NAME = "name";
 const std::string CMD_END = "end";
+const std::string CMD_RESTART = "restart";
 
 // Enums
 enum Color {
@@ -73,6 +75,10 @@ struct WordCard {
 
     WordCard(int num, std::string word, Color col) : order(num), gameWord(word), color(col) {}
 };
+
+//declarations
+std::vector<WordCard> loadWords(const std::filesystem::path& filePath); //kostyl' 
+
 
 struct Lobby {
     std::vector<std::vector<std::string>> slots{ 2 };
@@ -159,18 +165,36 @@ struct GameStats {
 struct GameSession {
     GameStats gameState;
     Lobby lobby;
-    std::vector<Player> players; // Changed to vector for simplicity
+    std::vector<Player> players;
     std::unordered_map<std::string, Player*> playerLookup;
     bool isStarted = false;
 
     GameSession(const std::vector<WordCard>& board) : gameState(board) {}
 
-    void addPlayer(Player& player) {
+    void addPlayer(Player& player) 
+    {
         playerLookup[player.name] = &player;
     }
+    void resetGame()
+    {
+        for (auto& teamSlots : lobby.slots) {
+            for (auto& slot : teamSlots) {
+                slot = "free";
+            }
+        }
 
+        for (auto& player : players) {
+            player.team = -1;
+            player.slot = -1;
+            player.role = SPECTATOR;
+            player.isHost = (player.clientId == 0);
+        }
+
+        auto newBoard = loadWords(WORDS_PATH);
+        gameState = GameStats(newBoard);
+        isStarted = false;
+    }
     void handlePacket(sf::Packet& packet, Player& sender);
-    // Break down handlers
     void handleParams(sf::Packet& packet, Player& sender);
     void handleBoard(sf::Packet& packet, Player& sender);
     void handleStart(sf::Packet& packet, Player& sender);
@@ -181,6 +205,7 @@ struct GameSession {
     void handleFlag(sf::Packet& packet, Player& sender);
     void handleChat(sf::Packet& packet, Player& sender);
     void handleEnd(Player& sender);
+    void handleRestart(Player& sender);
 };
 
 // Utility functions
@@ -336,7 +361,8 @@ bool sendWinner(sf::TcpSocket& socket, int team) {
 }
 
 // GameSession methods
-void GameSession::handlePacket(sf::Packet& packet, Player& sender) {
+void GameSession::handlePacket(sf::Packet& packet, Player& sender) 
+{
     std::string command;
     packet >> command;
     std::cout << "Received command '" << command << "' from: " << sender.name << '\n';
@@ -351,6 +377,7 @@ void GameSession::handlePacket(sf::Packet& packet, Player& sender) {
     else if (command == CMD_FLAG) handleFlag(packet, sender);
     else if (command == CMD_CHAT) handleChat(packet, sender);
     else if (command == CMD_END) handleEnd(sender);
+    else if (command == CMD_RESTART) handleRestart(sender);
 }
 
 void GameSession::handleParams(sf::Packet& packet, Player& sender) {
@@ -498,6 +525,27 @@ void GameSession::handleFlag(sf::Packet& packet, Player& sender) {
     // TODO: Implement flag handling if needed
 }
 
+void GameSession::handleRestart(Player& sender)
+{
+    if (!sender.isHost) return;
+    resetGame();
+
+    sf::Packet p;
+    p << "return_to_lobby";
+    for (auto& player : players)
+    {
+        player.socket->send(p);
+    }
+
+    auto lobbyPacket = createLobbyStatePacket(lobby);
+    for (auto& player : players) 
+    {
+        sendLobbyState(*player.socket, lobbyPacket);
+        sendTeamSize(*player.socket, static_cast<int>(lobby.slots[0].size()));
+    }
+
+}
+
 void GameSession::handleEnd(Player& sender) {
     if (sender.team != gameState.curTeam ||
         sender.role != (gameState.curRole == "master" ? MASTER : PLAYER))
@@ -521,11 +569,13 @@ void GameSession::handleChat(sf::Packet& packet, Player& sender) {
 
     for (auto& player : players) {
         sendChatMsg(*player.socket, gameState.curTeam, fullMsg);
-        sendNextAndTimer(*player.socket, gameState.curTeam, gameState.curRole, static_cast<float>(gameState.turnTimeLeft));
-
     }
     gameState.nextTurn();
     gameState.turnTimer.restart();
+    float timeLeft = gameState.getCurrentTurnTimeLeft();
+    for (auto& player : players) {
+        sendNextAndTimer(*player.socket, gameState.curTeam, gameState.curRole, timeLeft);
+    }
 }
 
 int main() {
